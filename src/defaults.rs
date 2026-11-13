@@ -37,7 +37,7 @@ pub fn default_providers() -> BTreeMap<String, Provider> {
     xai.responses_api = true;
     p.insert("xai".into(), xai);
     p.insert("openrouter".into(), provider("OpenRouter", "openai", "https://openrouter.ai/api/v1", false, false, "Cientos de modelos con una sola clave. Los que acaban en :free cuentan como gratis."));
-    p.insert("cerebras".into(), provider("Cerebras", "openai", "https://api.cerebras.ai/v1", false, true, "Prueba gratuita (gpt-oss-120b, qwen-3.8-27b). Muy rápido."));
+    p.insert("cerebras".into(), provider("Cerebras", "openai", "https://api.cerebras.ai/v1", false, false, "No es gratis: 5 $ de prueba (caducan a los 30 días, pide tarjeta). Muy rápido."));
     p.insert("mistral".into(), provider("Mistral", "openai", "https://api.mistral.ai/v1", false, false, "Comprueba la URL base y los IDs con \"Ver modelos\"."));
     p.insert("ollama".into(), provider("Ollama (local)", "openai", "http://localhost:11434/v1", true, true, "Gratis y privado, en tu PC. Instala Ollama y descarga un modelo (ollama pull qwen2.5-coder)."));
     p.insert("litellm".into(), provider("LiteLLM proxy", "openai", "http://localhost:4000/v1", true, false, "Tu propio proxy LiteLLM."));
@@ -174,5 +174,12 @@ pub fn migrate(cfg: &mut Config) {
         cfg.version = 2;
     }
     cfg.version = 3;
+    // Cerebras no tiene nivel gratuito permanente (solo créditos de prueba)
+    if let Some(c) = cfg.providers.get_mut("cerebras") {
+        if c.note.starts_with("Prueba gratuita") {
+            c.free = false;
+            c.note = "No es gratis: 5 $ de prueba (caducan a los 30 días, pide tarjeta). Muy rápido.".into();
+        }
+    }
 }
 
