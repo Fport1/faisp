@@ -25,6 +25,8 @@ pub struct Provider {
     pub kind: String, // "anthropic" | "openai" | "mock"
     pub api_key: String,
     pub base_url: String,
+    /// ID de cuenta para URLs con {account_id} (p. ej. Cloudflare Workers AI)
+    pub account_id: String,
     pub no_key_needed: bool,
     pub headers: BTreeMap<String, String>,
     /// Tiene uso gratuito (local o tier gratis). Usado por el modo ahorro.

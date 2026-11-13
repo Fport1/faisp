@@ -202,7 +202,16 @@ pub async fn list_models(http: &reqwest::Client, cfg: &Config, id: &str) -> anyh
         let base = if p.base_url.is_empty() { "https://api.anthropic.com" } else { p.base_url.trim_end_matches('/') };
         http.get(format!("{base}/v1/models?limit=100")).header("x-api-key", key).header("anthropic-version", "2023-06-01").send().await?.error_for_status()?.json().await?
     } else {
-        let mut rb = http.get(format!("{}/models", p.base_url.trim_end_matches('/')));
+        let base = base_of(p);
+        // Cloudflare Workers AI: búsqueda de modelos de generación de texto
+        if base.contains("api.cloudflare.com") && base.ends_with("/ai/v1") {
+            let url = format!("{}/models/search?task=Text%20Generation&per_page=100", base.trim_end_matches("/v1"));
+            let v: Value = http.get(url).bearer_auth(&key).send().await?.error_for_status()?.json().await?;
+            let mut ids: Vec<String> = v["result"].as_array().cloned().unwrap_or_default().iter().filter_map(|m| m["name"].as_str().map(String::from)).collect();
+            ids.sort();
+            return Ok(ids);
+        }
+        let mut rb = http.get(format!("{base}/models"));
         if !key.is_empty() {
             rb = rb.bearer_auth(key);
         }
@@ -222,6 +231,11 @@ pub struct LlmResult {
     pub demo: bool,
     pub usage: TokenUsage,
     pub tool_log: Vec<ToolCallLog>,
+}
+
+/// URL base del proveedor, sustituyendo {account_id} si la lleva.
+pub fn base_of(p: &Provider) -> String {
+    p.base_url.trim_end_matches('/').replace("{account_id}", p.account_id.trim())
 }
 
 pub fn parse_model_ref(r: &str) -> (String, String) {
@@ -293,6 +307,21 @@ async fn send_with_retry(pid: &str, rb: impl Fn() -> reqwest::RequestBuilder) ->
 
 /// Itera eventos SSE (`data: ...`) de una respuesta en streaming.
 async fn for_each_sse(res: reqwest::Response, mut f: impl FnMut(Value) -> anyhow::Result<()>) -> anyhow::Result<()> {
+    let is_json = res.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|c| c.contains("application/json")).unwrap_or(false);
+    if is_json {
+        // Proveedor que no respondió en streaming: un solo objeto chat.completion
+        let mut v: Value = res.json().await?;
+        if let Some(r) = v.get("result").filter(|r| r.get("choices").is_some()).cloned() {
+            v = r; // envoltorio { result: ... } de algunas APIs
+        }
+        let ch = &v["choices"][0];
+        let calls: Vec<Value> = ch["message"]["tool_calls"].as_array().cloned().unwrap_or_default().into_iter().enumerate().map(|(i, mut c)| {
+            c["index"] = json!(i);
+            c
+        }).collect();
+        let ev = json!({"choices": [{"delta": {"content": ch["message"]["content"], "tool_calls": calls}, "finish_reason": ch["finish_reason"]}], "usage": v["usage"], "model": v["model"]});
+        return f(ev);
+    }
     let mut stream = res.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -536,7 +565,10 @@ async fn anthropic(http: &reqwest::Client, pid: &str, p: &Provider, model: &str,
 
 async fn openai(http: &reqwest::Client, pid: &str, p: &Provider, model: &str, req: LlmRequest, sink: &dyn Sink, exec: Option<ToolExec>) -> anyhow::Result<LlmResult> {
     let key = api_key(pid, p).unwrap_or_default();
-    let url = format!("{}/chat/completions", p.base_url.trim_end_matches('/'));
+    if p.base_url.contains("{account_id}") && p.account_id.trim().is_empty() {
+        anyhow::bail!("{}: falta el ID de cuenta (Ajustes → Modelos)", p.label);
+    }
+    let url = format!("{}/chat/completions", base_of(p));
     let sys = if req.volatile.is_empty() { req.stable.clone() } else { format!("{}\n\n{}", req.stable, req.volatile) };
     let mut msgs: Vec<Value> = vec![json!({"role":"system","content": sys})];
     msgs.extend(req.messages.iter().map(|(r, c)| json!({"role": r, "content": c})));
@@ -899,7 +931,7 @@ async fn codex_cli(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink: 
 
 async fn responses(http: &reqwest::Client, pid: &str, p: &Provider, model: &str, req: LlmRequest, sink: &dyn Sink) -> anyhow::Result<LlmResult> {
     let key = api_key(pid, p).unwrap_or_default();
-    let url = format!("{}/responses", p.base_url.trim_end_matches('/'));
+    let url = format!("{}/responses", base_of(p));
     let sys = if req.volatile.is_empty() { req.stable.clone() } else { format!("{}\n\n{}", req.stable, req.volatile) };
     let mut input = vec![json!({"role":"system","content": sys})];
     input.extend(req.messages.iter().map(|(r, c)| json!({"role": r, "content": c})));

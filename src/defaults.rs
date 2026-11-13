@@ -39,6 +39,9 @@ pub fn default_providers() -> BTreeMap<String, Provider> {
     p.insert("openrouter".into(), provider("OpenRouter", "openai", "https://openrouter.ai/api/v1", false, false, "Cientos de modelos con una sola clave. Los que acaban en :free cuentan como gratis."));
     p.insert("cerebras".into(), provider("Cerebras", "openai", "https://api.cerebras.ai/v1", false, false, "No es gratis: 5 $ de prueba (caducan a los 30 días, pide tarjeta). Muy rápido."));
     p.insert("mistral".into(), provider("Mistral", "openai", "https://api.mistral.ai/v1", false, false, "Comprueba la URL base y los IDs con \"Ver modelos\"."));
+    let mut cf = provider("Cloudflare Workers AI", "openai", "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1", false, true, "Gratis: 10.000 neuronas al día (se reinicia a las 00:00 UTC). Necesita tu ID de cuenta y un token de API con permiso de Workers AI.");
+    cf.account_id = String::new();
+    p.insert("cloudflare".into(), cf);
     p.insert("ollama".into(), provider("Ollama (local)", "openai", "http://localhost:11434/v1", true, true, "Gratis y privado, en tu PC. Instala Ollama y descarga un modelo (ollama pull qwen2.5-coder)."));
     p.insert("litellm".into(), provider("LiteLLM proxy", "openai", "http://localhost:4000/v1", true, false, "Tu propio proxy LiteLLM."));
     p.insert("openai".into(), provider("OpenAI", "openai", "https://api.openai.com/v1", false, false, ""));
@@ -71,7 +74,7 @@ pub fn default_agents() -> Vec<Agent> {
         agent("orquestador", "Orquestador", "compass", "#d97757", OPUS, "medium",
             "Lee la petición, decide qué agentes intervienen y en qué orden. Barato y rápido.", &[],
             "Eres el orquestador de un equipo de IAs especializadas. Tu trabajo es planificar, no ejecutar.".into(), false,
-            &["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-20b", "ollama:qwen2.5:7b"]),
+            &["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-20b", "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast", "ollama:qwen2.5:7b"]),
         agent("codigo", "Programador", "code", "#6a9bcc", OPUS, "medium",
             "Código, mixins, Gradle, shaders, JSON de datos, depuración.",
             &["código", "codigo", "java", "kotlin", "rust", "mixin", "fabric", "gradle", "bug", "error", "crash", "shader", "clase", "registrar", "registro", "compila", "función", "funcion", "script", "api", "refactor", "implementa", "datapack", "receta", "loot"],
@@ -174,6 +177,14 @@ pub fn migrate(cfg: &mut Config) {
         cfg.version = 2;
     }
     cfg.version = 3;
+    // Cloudflare como respaldo gratuito del orquestador y el revisor
+    for a in cfg.agents.iter_mut().filter(|a| a.builtin && (a.id == "orquestador" || a.id == "revisor")) {
+        let cf = "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast".to_string();
+        if !a.fallbacks.contains(&cf) {
+            let pos = a.fallbacks.iter().position(|m| m.starts_with("ollama:")).unwrap_or(a.fallbacks.len());
+            a.fallbacks.insert(pos, cf);
+        }
+    }
     // Cerebras no tiene nivel gratuito permanente (solo créditos de prueba)
     if let Some(c) = cfg.providers.get_mut("cerebras") {
         if c.note.starts_with("Prueba gratuita") {

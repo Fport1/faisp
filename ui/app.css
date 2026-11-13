@@ -337,9 +337,9 @@ body.collapsed .recents { flex: 1; }
 .home .limit-banner { max-width: 680px; }
 
 /* ---------- v6: logos, claves, selector de modelo ---------- */
-.tile.brand { display: inline-grid; place-items: center; border-radius: 10px; background: var(--soft); border: 1px solid var(--line); flex: none; color: var(--text); font-weight: 700; }
-.tile.brand.letter { background: var(--soft); color: var(--muted); }
-.conn .tile.brand { border-radius: 10px; }
+.tile.blogo { display: inline-grid; place-items: center; border-radius: 10px; background: var(--soft); border: 1px solid var(--line); flex: none; color: var(--text); font-weight: 700; }
+.tile.blogo.letter { background: var(--soft); color: var(--muted); }
+.conn .tile.blogo { border-radius: 10px; }
 .keybox { display: flex; align-items: center; gap: 4px; }
 .keybox input { flex: 1; }
 .keylink { font-size: 12.5px; color: var(--accent2); text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }

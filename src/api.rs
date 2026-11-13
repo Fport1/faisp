@@ -768,6 +768,7 @@ async fn provider_test(State(st): St, Path(id): Path<String>, Json(b): Json<Test
             "groq" => "openai/gpt-oss-20b".into(),
             "xai" => "grok-4.7".into(),
             "cerebras" => "gpt-oss-120b".into(),
+            "cloudflare" => "@cf/meta/llama-3.3-70b-instruct-fp8-fast".into(),
             "chatgpt" => String::new(),
             _ => String::new(),
         };

@@ -60,16 +60,16 @@ const ICONS = {
   shield: '<path d="M12 3 4.5 6v6c0 4.5 3.2 7.8 7.5 9 4.3-1.2 7.5-4.5 7.5-9V6z"/>',
 };
 // ---------- Logos de proveedores y conectores ----------
-const PROVIDER_BRAND = { anthropic: 'anthropic', claude: 'claude', gemini: 'googlegemini', ollama: 'ollama', xai: 'x', openrouter: 'openrouter', mistral: 'mistralai', elevenlabs: 'elevenlabs', github: 'github', vercel: 'vercel', notion: 'notion', linear: 'linear', gdrive: 'googledrive', gmail: 'gmail', gcalendar: 'googlecalendar' };
+const PROVIDER_BRAND = { cloudflare: 'cloudflare', anthropic: 'anthropic', claude: 'claude', gemini: 'googlegemini', ollama: 'ollama', xai: 'x', openrouter: 'openrouter', mistral: 'mistralai', elevenlabs: 'elevenlabs', github: 'github', vercel: 'vercel', notion: 'notion', linear: 'linear', gdrive: 'googledrive', gmail: 'gmail', gcalendar: 'googlecalendar' };
 const DARK_BRANDS = ['000000', '181717', '191919'];
 function brandTile(id, label = '', size = 38) {
   const b = typeof BRAND !== 'undefined' && BRAND[PROVIDER_BRAND[id] || id];
   if (b) {
     const fill = DARK_BRANDS.includes(b.hex) ? 'var(--text)' : '#' + b.hex;
-    return `<span class="tile brand" style="width:${size}px;height:${size}px" title="${esc(b.title)}"><svg viewBox="0 0 24 24" width="${Math.round(size * 0.55)}" height="${Math.round(size * 0.55)}" fill="${fill}" aria-hidden="true"><path d="${b.d}"/></svg></span>`;
+    return `<span class="tile blogo" style="width:${size}px;height:${size}px" title="${esc(b.title)}"><svg viewBox="0 0 24 24" width="${Math.round(size * 0.55)}" height="${Math.round(size * 0.55)}" fill="${fill}" aria-hidden="true"><path d="${b.d}"/></svg></span>`;
   }
   const letter = (label || id).replace(/[^A-Za-z0-9]/g, '').slice(0, 2) || '?';
-  return `<span class="tile brand letter" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.36)}px">${esc(letter)}</span>`;
+  return `<span class="tile blogo letter" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.36)}px">${esc(letter)}</span>`;
 }
 
 // ---------- Catálogo de modelos (desplegable) ----------
@@ -80,12 +80,14 @@ const MODEL_CATALOG = {
   groq: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile'],
   xai: ['grok-4.7', 'grok-4.3'],
   cerebras: ['gpt-oss-120b', 'qwen-3.8-27b'],
+  cloudflare: ['@cf/meta/llama-3.3-70b-instruct-fp8-fast', '@cf/openai/gpt-oss-120b'],
   chatgpt: [''],
 };
 const prettyModel = m => {
   const c = m.match(/^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/);
   if (c) return 'Claude ' + c[1][0].toUpperCase() + c[1].slice(1) + ' ' + c[2] + '.' + c[3];
   if (m === '') return 'Modelo por defecto';
+  if (m.startsWith('@cf/')) return m.split('/').pop();
   return m.replace(/^gemini-/, 'Gemini ').replace(/^grok-/, 'Grok ');
 };
 function modelPickerHtml(id, value, extraClass = '') {
@@ -111,7 +113,7 @@ function wireModelPicker(sel) {
     sel.value = v; prev = v;
   });
 }
-const KEY_URLS = { anthropic: 'https://console.anthropic.com/settings/keys', gemini: 'https://aistudio.google.com/apikey', groq: 'https://console.groq.com/keys', xai: 'https://console.x.ai', openrouter: 'https://openrouter.ai/keys', cerebras: 'https://cloud.cerebras.ai', mistral: 'https://console.mistral.ai/api-keys', openai: 'https://platform.openai.com/api-keys', elevenlabs: 'https://elevenlabs.io/app/settings/api-keys' };
+const KEY_URLS = { cloudflare: 'https://dash.cloudflare.com/?to=/:account/ai/workers-ai', anthropic: 'https://console.anthropic.com/settings/keys', gemini: 'https://aistudio.google.com/apikey', groq: 'https://console.groq.com/keys', xai: 'https://console.x.ai', openrouter: 'https://openrouter.ai/keys', cerebras: 'https://cloud.cerebras.ai', mistral: 'https://console.mistral.ai/api-keys', openai: 'https://platform.openai.com/api-keys', elevenlabs: 'https://elevenlabs.io/app/settings/api-keys' };
 
 const MODES = [
   { id: 'auto', label: 'Auto', icon: 'sparkle', desc: 'Lee libremente; las ediciones quedan como propuestas y los comandos piden permiso' },
@@ -980,7 +982,7 @@ function providerUsageCard(id, p) {
   if (a && a.kind === 'characters') {
     rows.push(`<div class="ubar sm"><div class="row"><span>Caracteres del plan${a.tier ? ' · ' + esc(a.tier) : ''}</span><span class="muted" style="font-size:12px">${a.resetsAt ? fmtReset(a.resetsAt) : ''}</span><span style="flex:1"></span><span class="mono">${fmtN(a.used)} / ${fmtN(a.limit)}</span></div><div class="track"><div style="width:${pct(+a.used, +a.limit)}%"></div></div></div>`);
   }
-  if (!rows.length) rows.push(`<div class="muted" style="font-size:12.5px">${p.kind === 'codex-cli' ? 'Codex CLI no informa de los límites de tu plan de ChatGPT.' : p.kind === 'openai' && ['gemini'].includes(id) ? 'Gemini no devuelve sus límites en las respuestas; consúltalos en AI Studio.' : 'Aún no hay datos de límites: aparecerán al usarlo o con «Comprobar».'}</div>`);
+  if (!rows.length) rows.push(`<div class="muted" style="font-size:12.5px">${p.kind === 'codex-cli' ? 'Codex CLI no informa de los límites de tu plan de ChatGPT.' : p.kind === 'openai' && ['gemini'].includes(id) ? 'Gemini no devuelve sus límites en las respuestas; consúltalos en AI Studio.' : id === 'cloudflare' ? 'Gratis hasta 10.000 neuronas al día (se reinicia a las 00:00 UTC); el consumo exacto se ve en el panel de Cloudflare.' : 'Aún no hay datos de límites: aparecerán al usarlo o con «Comprobar».'}</div>`);
   return `<div class="card pu"><div class="row" style="margin-bottom:8px">${brandTile(id, p.label, 26)}<span class="dot ${p.ready ? 'on' : ''}"></span><b>${esc(p.label)}</b>${p.free ? `<span class="chip eco">${ico('zap', 11)} gratis</span>` : ''}<span style="flex:1"></span>
       <span class="muted" style="font-size:12.5px">7 días: ${fmtTok(p.week.tokens)} tok${p.week.cost ? ' · ' + fmtUsd(p.week.cost) : ''} · ${p.week.calls} llamadas</span>${p.ready && p.kind !== 'elevenlabs' ? `<button class="btn sm" data-check="${esc(id)}">Comprobar</button>` : ''}</div>${rows.join('')}</div>`;
 }
@@ -1019,7 +1021,7 @@ function setModels(body, cfg, save) {
     $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px">${brandTile(id, p.label, 30)}<span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b>${KEY_URLS[id] && !p.apiKey ? `<a class="keylink" href="${KEY_URLS[id]}" target="_blank" rel="noopener">${ico('key', 12)} Obtener clave</a>` : ''}<span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span>${p.type !== 'elevenlabs' ? `<button class="btn sm" data-ptest="${esc(id)}">${ico('play', 12)} Probar</button>` : ''}<button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button><button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button></div>
       ${p.note ? `<div class="muted" style="font-size:12.5px;margin-bottom:8px">${esc(p.note)}</div>` : ''}<div class="models-out" data-mo="${esc(id)}"></div>
       <div class="form three"><label>Tipo<select class="in" data-pf="${esc(id)}.type">${[['anthropic', 'anthropic'], ['openai', 'openai (compatible)'], ['claude-code', 'Claude Code (suscripción)'], ['mock', 'demo']].map(([k, l]) => `<option value="${k}" ${p.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label>${p.type === 'claude-code' ? 'Ruta de claude.exe (vacío = automática)' : 'URL base'}<input type="text" data-pf="${esc(id)}.baseUrl" value="${esc(p.baseUrl)}"></label>
+      ${(p.baseUrl || '').includes('{account_id}') ? `<label>ID de cuenta<input type="text" data-pf="${esc(id)}.accountId" value="${esc(p.accountId || '')}" placeholder="Workers AI → Usar REST API → Account ID"></label>` : `<label>${p.type === 'claude-code' ? 'Ruta de claude.exe (vacío = automática)' : 'URL base'}<input type="text" data-pf="${esc(id)}.baseUrl" value="${esc(p.baseUrl)}"></label>`}
       ${p.type === 'claude-code' ? '<label>Sesión<input type="text" disabled value="En Ajustes → Cuenta"></label>' : `<label>API key ${p.noKeyNeeded ? '(no necesaria)' : ''}<div class="keybox"><input type="password" data-pf="${esc(id)}.apiKey" value="${esc(p.apiKey)}" placeholder="${p.noKeyNeeded ? 'local' : 'pega tu clave'}" autocomplete="off"><button type="button" class="icon-btn" data-eye="${esc(id)}" title="Ver u ocultar la clave">${ico('eye', 15)}</button></div></label>`}</div></div>`).join('');
     $$('[data-rmp]').forEach(b => b.onclick = () => { if (confirm('¿Quitar proveedor?')) { delete cfg.providers[b.dataset.rmp]; drawProvs(); } });
     $$('[data-pf]').forEach(inp => inp.onchange = () => { const [id, f] = inp.dataset.pf.split('.'); cfg.providers[id][f] = inp.value; });
