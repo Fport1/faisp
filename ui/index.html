@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>faisp</title>
+  <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="/app.css">
+  <script>try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; if (localStorage.getItem('collapsed') === '1') document.documentElement.classList.add('pre-collapsed'); } catch {}</script>
+</head>
+<body>
+  <aside id="sidebar">
+    <div class="brand">
+      <img src="/icon.svg" alt="">
+      <span class="label">faisp</span>
+      <button class="icon-btn" id="toggleSide" title="Contraer barra lateral" data-i="sidebar" data-s="18"></button>
+    </div>
+    <nav class="side-nav">
+      <button class="nav-item primary" id="newChat"><span class="ico" data-i="plus" data-s="15"></span><span class="label">Nuevo chat</span></button>
+      <button class="nav-item" data-view="chats"><span class="ico" data-i="chat"></span><span class="label">Chats</span></button>
+      <button class="nav-item" data-view="projects"><span class="ico" data-i="folder"></span><span class="label">Proyectos</span></button>
+      <button class="nav-item" data-view="artifacts"><span class="ico" data-i="layers"></span><span class="label">Artefactos</span></button>
+      <button class="nav-item" data-view="agents"><span class="ico" data-i="bot"></span><span class="label">Agentes</span></button>
+      <button class="nav-item" data-view="extensions"><span class="ico" data-i="plug"></span><span class="label">Extensiones</span></button>
+      <button class="nav-item" data-view="routines"><span class="ico" data-i="clock"></span><span class="label">Rutinas</span></button>
+      <button class="nav-item" data-view="usage"><span class="ico" data-i="chart"></span><span class="label">Uso y tokens</span></button>
+    </nav>
+    <div class="proj-switch"><button class="nav-item" id="projSwitch"><span class="proj-dot"></span><span class="label" id="projName">Proyecto</span></button></div>
+    <div class="recents" id="recents"></div>
+    <div class="side-foot">
+      <div class="avatar" id="avatar">F</div>
+      <div class="label" style="flex:1;min-width:0">
+        <div style="font-size:13.5px;font-weight:600">Mi espacio</div>
+        <span class="plan-badge" id="planBadge">self-hosted</span>
+      </div>
+      <button class="icon-btn label" id="themeBtn" title="Tema claro/oscuro" data-i="theme" data-s="17"></button>
+      <button class="icon-btn" data-view="settings" title="Ajustes" data-i="settings" data-s="18"></button>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div class="topbar">
+      <button class="icon-btn hidden" id="openSide" title="Abrir barra lateral" data-i="menu" data-s="18"></button>
+      <input class="title" id="chatTitle" value="" spellcheck="false">
+      <span class="spacer"></span>
+      <span class="chip hidden" id="spendChip" title="Gasto del mes"></span>
+      <button class="chip" id="panelBtn" title="Pizarra compartida y artefactos"><span data-i="panel" data-s="14"></span> Pizarra</button>
+    </div>
+    <div class="view" id="view"></div>
+    <div class="composer-wrap" id="composerWrap"></div>
+  </main>
+
+  <aside id="panel">
+    <div class="panel-head">
+      <div class="tabs" id="panelTabs">
+        <button data-tab="board" class="on">Pizarra</button>
+        <button data-tab="artifact">Artefacto</button>
+      </div>
+      <span style="flex:1"></span>
+      <button class="icon-btn" id="closePanel" title="Cerrar" data-i="x" data-s="16"></button>
+    </div>
+    <div class="panel-body" id="panelBody"></div>
+  </aside>
+
+  <script src="/vendor/marked.js"></script>
+  <script src="/vendor/purify.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

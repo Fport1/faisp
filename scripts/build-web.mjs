@@ -1,0 +1,38 @@
+// Monta web/ para Vercel: landing (web-src/index.html) + la app real en modo demo (/app).
+// Uso: node scripts/build-web.mjs
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const out = path.join(root, 'web');
+fs.mkdirSync(out, { recursive: true });
+// Conserva .vercel (enlace con el proyecto de Vercel)
+for (const e of fs.readdirSync(out)) if (e !== '.vercel') fs.rmSync(path.join(out, e), { recursive: true, force: true });
+fs.mkdirSync(path.join(out, 'vendor'), { recursive: true });
+
+const copy = (from, to) => fs.copyFileSync(path.join(root, from), path.join(out, to));
+copy('web-src/index.html', 'index.html');
+copy('web-src/demo-api.js', 'demo-api.js');
+for (const f of ['app.js', 'app.css', 'icon.svg', 'vendor/marked.js', 'vendor/purify.js']) copy('ui/' + f, f);
+
+let app = fs.readFileSync(path.join(root, 'ui/index.html'), 'utf8');
+app = app.replace('<title>faisp</title>', '<title>faisp — demo web</title>');
+app = app.replace('<script src="/app.js"></script>', '<script src="/demo-api.js"></script>\n  <script src="/app.js"></script>');
+app = app.replace('</body>', `  <a href="/" class="demo-note" title="Las respuestas son de ejemplo: la demo no usa claves ni accede a tu ordenador">Demo web · respuestas de ejemplo</a>
+  <style>.demo-note{position:fixed;right:14px;bottom:10px;z-index:30;font-size:12px;color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:3px 12px;text-decoration:none}</style>
+</body>`);
+fs.writeFileSync(path.join(out, 'app.html'), app);
+
+fs.writeFileSync(path.join(out, 'vercel.json'), JSON.stringify({
+  cleanUrls: true,
+  headers: [{ source: '/(.*)', headers: [
+    { key: 'X-Content-Type-Options', value: 'nosniff' },
+    { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  ] }],
+}, null, 2));
+
+const files = [];
+const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); e.isDirectory() ? walk(p) : files.push(path.relative(out, p).replace(/\\/g, '/')); } };
+walk(out);
+console.log('web/ listo:', files.join(', '));

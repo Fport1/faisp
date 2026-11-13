@@ -1,0 +1,905 @@
+/* faisp — interfaz. Sin frameworks: DOM + fetch + SSE. */
+'use strict';
+
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtN = n => (n || 0).toLocaleString('es-ES');
+const fmtUsd = n => '$' + (n || 0).toFixed((n || 0) < 1 ? 4 : 2);
+const fmtTok = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n || 0);
+const ago = ts => { const s = (Date.now() - new Date(ts)) / 1000; if (s < 60) return 'ahora'; if (s < 3600) return Math.floor(s / 60) + ' min'; if (s < 86400) return Math.floor(s / 3600) + ' h'; return Math.floor(s / 86400) + ' d'; };
+const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+
+// ---------- Iconos (línea, 24px, estilo Lucide) ----------
+const ICONS = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  chat: '<path d="M21 12a8.5 8.5 0 0 1-12.3 7.6L3.5 21l1.3-4.6A8.5 8.5 0 1 1 21 12z"/>',
+  folder: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.2h7.5A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>',
+  layers: '<path d="M12 3.5 21 8l-9 4.5L3 8z"/><path d="m3 12.5 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/>',
+  bot: '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 4v4M2 13v3M22 13v3"/><circle cx="9" cy="14" r="1" fill="currentColor"/><circle cx="15" cy="14" r="1" fill="currentColor"/>',
+  plug: '<path d="M9 2.5v5M15 2.5v5M6 7.5h12v4a6 6 0 0 1-12 0z"/><path d="M12 17.5v4"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/>',
+  chart: '<path d="M4 20V11M10 20V5M16 20v-6M2.5 20.5h19"/>',
+  settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  sidebar: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9.5 4v16"/>',
+  panel: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M14.5 4v16"/>',
+  theme: '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17z" fill="currentColor"/>',
+  compass: '<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/>',
+  code: '<path d="m8.5 7-5 5 5 5M15.5 7l5 5-5 5"/>',
+  cube: '<path d="M12 2.8 20.2 7.4v9.2L12 21.2l-8.2-4.6V7.4z"/><path d="M12 12l8.2-4.6M12 12v9.2M12 12 3.8 7.4"/>',
+  feather: '<path d="M20 4.5a5.4 5.4 0 0 0-7.7 0L5 11.8V19h7.2l7.3-7.3a5.4 5.4 0 0 0 .5-7.2z"/><path d="M16 8.5 3 21.5M17.5 15h-8"/>',
+  map: '<path d="m9 4.5-5.5 2v13l5.5-2 6 2 5.5-2v-13l-5.5 2z"/><path d="M9 4.5v13M15 6.5v13"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="m8.2 12.4 2.5 2.5 5.1-5.3"/>',
+  tick: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.3-4.3"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  wrench: '<path d="M14.7 6.3a4.2 4.2 0 0 0-5.5 5.5L3.5 17.5l3 3 5.7-5.7a4.2 4.2 0 0 0 5.5-5.5l-2.7 2.7-2.6-.4-.4-2.6z"/>',
+  x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  arrowUp: '<path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/>',
+  stop: '<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
+  sparkle: '<path d="M12 3.5 13.9 9 19.5 11 13.9 13 12 18.5 10.1 13 4.5 11 10.1 9z"/>',
+  trash: '<path d="M4 7h16M9.5 7V4.5h5V7M6 7l1 13h10l1-13"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+  play: '<path d="M7.5 4.5v15l12-7.5z"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>',
+  download: '<path d="M12 4v11M6.5 10l5.5 5.5 5.5-5.5M4 20h16"/>',
+  refresh: '<path d="M20 11.5a8 8 0 1 1-2.4-5.7L20 8"/><path d="M20 3.5V8h-4.5"/>',
+  zap: '<path d="M13 2.5 4.5 13.5H11l-1 8 8.5-11H12z"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m10.9 12.1 9.1-9.1M16.5 6.5l3 3"/>',
+  alert: '<path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5M12 17.3v.2"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3.1-3.1a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3.1 3.1a4 4 0 0 0 5.7 5.7l1-1"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  pencil: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/>',
+  palette: '<path d="M12 3a9 9 0 1 0 0 18c1.4 0 2-1 2-2 0-1.7 1-2.5 2.5-2.5H18a3 3 0 0 0 3-3C21 7 17 3 12 3z"/><circle cx="7.5" cy="11" r="1" fill="currentColor"/><circle cx="10.5" cy="7" r="1" fill="currentColor"/><circle cx="15.5" cy="7.5" r="1" fill="currentColor"/>',
+  music: '<path d="M9 18V5l11-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="m21 16-5-5-9 9"/>',
+  shield: '<path d="M12 3 4.5 6v6c0 4.5 3.2 7.8 7.5 9 4.3-1.2 7.5-4.5 7.5-9V6z"/>',
+};
+const MODES = [
+  { id: 'auto', label: 'Auto', icon: 'sparkle', desc: 'Lee libremente; las ediciones quedan como propuestas y los comandos piden permiso' },
+  { id: 'manual', label: 'Manual', icon: 'shield', desc: 'Pide permiso antes de cada cambio' },
+  { id: 'acceptEdits', label: 'Aceptar ediciones', icon: 'pencil', desc: 'Aplica los cambios en archivos (con copia); los comandos piden permiso' },
+  { id: 'plan', label: 'Plan', icon: 'book', desc: 'Solo lee y te propone un plan; no cambia nada' },
+  { id: 'bypass', label: 'Omitir permisos', icon: 'alert', desc: 'Todo sin preguntar. Úsalo con cuidado' },
+];
+const EFFORTS = [['agent', 'Según el agente'], ['low', 'Bajo'], ['medium', 'Medio'], ['high', 'Alto'], ['xhigh', 'Muy alto'], ['max', 'Máximo']];
+const EFFORT_LEVELS = EFFORTS.slice(1);
+const AGENT_ICONS = ['play', 'compass', 'code', 'cube', 'feather', 'map', 'globe', 'check', 'search', 'book', 'palette', 'music', 'image', 'shield', 'sparkle', 'bot', 'wrench', 'chart', 'layers'];
+const ico = (name, size = 16, sw = 1.75) => `<svg class="i" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ICONS.sparkle}</svg>`;
+const agentIcon = (a, size = 16) => a && ICONS[a.icon] ? `<span style="color:${esc(a.color || 'currentColor')};display:inline-flex">${ico(a.icon, size)}</span>` : esc(a?.icon || '');
+
+const MODEL_SUGGESTIONS = ['anthropic:claude-opus-5-5', 'anthropic:claude-sonnet-5-5', 'anthropic:claude-haiku-5-5', 'anthropic:claude-fable-5-2', 'openrouter:google/gemini-2.5-pro', 'openrouter:openai/gpt-5', 'openrouter:deepseek/deepseek-chat', 'openrouter:anthropic/claude-sonnet-5-5', 'ollama:qwen2.5-coder', 'litellm:mi-modelo'];
+
+const S = {
+  st: null, view: 'chat', projectId: store.get('projectId', null), chatId: null, chat: null,
+  streaming: false, abort: null, attachments: [], agent: 'auto', mode: store.get('mode', ''), effort: store.get('effort', 'agent'), panelTab: 'board', artifactId: null,
+  artifacts: [], lastPlan: null, code: [],
+};
+
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  const t = await r.text();
+  return t ? JSON.parse(t) : null;
+}
+function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
+
+// ---------- Markdown ----------
+marked.use({
+  gfm: true, breaks: false,
+  renderer: {
+    code(tok) {
+      const info = (tok.lang || '').trim();
+      const lang = info.split(/\s+/)[0] || '';
+      const pm = info.match(/path=(\S+)/);
+      const i = S.code.push({ text: tok.text, lang, path: pm ? pm[1] : null }) - 1;
+      const label = pm ? `<span class="p">${esc(pm[1])}</span>` : `<span>${esc(lang || 'texto')}</span>`;
+      const save = pm ? `<button data-act="save-code" data-ci="${i}">Guardar en proyecto</button>` : '';
+      const preview = (lang === 'html' || lang === 'svg') ? `<button data-act="preview-code" data-ci="${i}">Vista previa</button>` : '';
+      return `<div class="codeblock"><div class="cb-head">${label}<span class="sp"></span>${preview}${save}<button data-act="copy-code" data-ci="${i}">Copiar</button></div><pre><code>${esc(tok.text)}</code></pre></div>`;
+    },
+  },
+});
+const md = text => DOMPurify.sanitize(marked.parse(text || ''), { ADD_ATTR: ['target'] });
+
+// ---------- Estado global ----------
+async function loadState() {
+  S.st = await api('GET', '/api/state');
+  const projects = S.st.projects;
+  if (!projects.some(p => p.id === S.projectId)) S.projectId = projects.find(p => p.path)?.id || projects[0]?.id || null;
+  renderSidebar();
+}
+const project = () => S.st?.projects.find(p => p.id === S.projectId) || null;
+const agents = () => S.st?.agents || [];
+const agentById = id => agents().find(a => a.id === id);
+
+function setProject(id) {
+  S.projectId = id; store.set('projectId', id);
+  if (S.chat && S.chat.projectId !== id) { S.chatId = null; S.chat = null; }
+  renderSidebar(); render(); if (document.body.classList.contains('panel-open')) renderPanel();
+}
+
+// ---------- Sidebar ----------
+function renderSidebar() {
+  const p = project();
+  $('#projName').textContent = p ? p.name : 'Sin proyecto';
+  $('.proj-switch .proj-dot').style.background = p?.color || 'var(--faint)';
+  $('#planBadge').textContent = S.st.config.license?.plan || 'self-hosted';
+  const spend = S.st.monthSpend || 0;
+  const chip = $('#spendChip');
+  chip.classList.toggle('hidden', !spend);
+  chip.textContent = 'Mes: ' + fmtUsd(spend);
+  const chats = S.st.chats.filter(c => c.projectId === S.projectId).slice(0, 40);
+  $('#recents').innerHTML = `<h4>Recientes${p ? ' · ' + esc(p.name) : ''}</h4>` + (chats.length ? chats.map(c =>
+    `<div class="chat-link ${c.id === S.chatId ? 'active' : ''}" data-chat="${c.id}" role="button" tabindex="0"><span class="t">${c.routineId ? '' : ''}${esc(c.title || 'Nuevo chat')}</span><button class="x" data-del-chat="${c.id}" title="Borrar">${ico('x', 14)}</button></div>`).join('')
+    : '<div class="muted" style="font-size:13px;padding:4px 10px">Aún no hay chats.</div>');
+  $$('.nav-item[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === S.view && S.view !== 'chat'));
+}
+
+$('#recents').addEventListener('click', async e => {
+  const del = e.target.closest('[data-del-chat]');
+  if (del) {
+    e.stopPropagation();
+    if (!confirm('¿Borrar este chat?')) return;
+    await api('DELETE', '/api/chats/' + del.dataset.delChat);
+    if (S.chatId === del.dataset.delChat) { S.chatId = null; S.chat = null; }
+    await loadState(); render(); return;
+  }
+  const c = e.target.closest('[data-chat]');
+  if (c) openChat(c.dataset.chat);
+});
+
+$('#newChat').onclick = () => { S.view = 'chat'; S.chatId = null; S.chat = null; S.attachments = []; renderSidebar(); render(); };
+$$('[data-view]').forEach(b => b.onclick = () => { S.view = b.dataset.view; renderSidebar(); render(); });
+$('#toggleSide').onclick = () => { document.body.classList.toggle('collapsed'); store.set('collapsed', document.body.classList.contains('collapsed') ? '1' : '0'); syncOpenSide(); };
+$('#openSide').onclick = () => { document.body.classList.remove('collapsed'); store.set('collapsed', '0'); syncOpenSide(); };
+function syncOpenSide() { $('#openSide').classList.toggle('hidden', !document.body.classList.contains('collapsed') || innerWidth > 860); }
+$('#themeBtn').onclick = () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next; store.set('theme', next);
+};
+$('#projSwitch').onclick = e => {
+  const items = S.st.projects.map(p => ({ label: `<span class="proj-dot" style="background:${esc(p.color || '#999')}"></span>${esc(p.name)}${p.id === S.projectId ? ' ' + ico('tick', 14) : ''}`, run: () => setProject(p.id) }));
+  items.push('-', { label: ico('plus', 15) + ' Nuevo proyecto desde carpeta…', run: newProjectFromFolder }, { label: ico('settings', 15) + ' Gestionar proyectos', run: () => { S.view = 'projects'; renderSidebar(); render(); } });
+  menu(e.currentTarget, items);
+};
+
+function menu(anchor, items) {
+  $$('.menu').forEach(m => m.remove());
+  const m = document.createElement('div'); m.className = 'menu';
+  items.forEach(it => {
+    if (it === '-') { m.insertAdjacentHTML('beforeend', '<div class="sep"></div>'); return; }
+    const b = document.createElement('button'); b.innerHTML = it.label; b.onclick = () => { m.remove(); it.run(); }; m.appendChild(b);
+  });
+  document.body.appendChild(m);
+  const r = anchor.getBoundingClientRect();
+  const top = Math.min(r.bottom + 4, innerHeight - m.offsetHeight - 8);
+  m.style.left = Math.min(r.left, innerWidth - m.offsetWidth - 8) + 'px';
+  m.style.top = (top < 8 ? r.top - m.offsetHeight - 4 : top) + 'px';
+  setTimeout(() => document.addEventListener('click', function off(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('click', off); } }), 0);
+}
+
+function modal(title, bodyHtml, buttons = []) {
+  const o = document.createElement('div'); o.className = 'overlay';
+  o.innerHTML = `<div class="modal"><header>${title}<span style="flex:1"></span><button class="icon-btn" data-close>${ico('x', 14)}</button></header><div class="body">${bodyHtml}</div><footer></footer></div>`;
+  const close = () => o.remove();
+  o.addEventListener('mousedown', e => { if (e.target === o) close(); });
+  $('[data-close]', o).onclick = close;
+  for (const b of buttons) {
+    const el = document.createElement('button'); el.className = 'btn ' + (b.cls || ''); el.textContent = b.label;
+    el.onclick = async () => { try { const keep = await b.run(o); if (keep !== true) close(); } catch (err) { toast(err.message); } };
+    $('footer', o).appendChild(el);
+  }
+  document.body.appendChild(o);
+  return o;
+}
+
+// ---------- Router de vistas ----------
+function render() {
+  S.code = [];
+  const v = $('#view');
+  $('#composerWrap').innerHTML = '';
+  const titleEl = $('#chatTitle');
+  titleEl.classList.toggle('hidden', S.view !== 'chat' || !S.chat);
+  if (S.view === 'chat') return renderChat();
+  const views = { chats: viewChats, projects: viewProjects, artifacts: viewArtifacts, agents: viewAgents, extensions: viewExtensions, routines: viewRoutines, usage: viewUsage, settings: viewSettings };
+  v.innerHTML = '<div class="page"><div class="muted">Cargando…</div></div>';
+  (views[S.view] || viewChats)(v).catch(err => { v.innerHTML = `<div class="page err">${esc(err.message)}</div>`; });
+}
+
+// ---------- Chat ----------
+async function openChat(id) {
+  S.view = 'chat'; S.chatId = id; S.attachments = [];
+  S.chat = await api('GET', '/api/chats/' + id);
+  if (S.chat.projectId && S.chat.projectId !== S.projectId) { S.projectId = S.chat.projectId; store.set('projectId', S.projectId); }
+  await refreshArtifacts();
+  renderSidebar(); render();
+}
+
+async function refreshArtifacts() {
+  if (!S.projectId) { S.artifacts = []; return; }
+  S.artifacts = await api('GET', '/api/artifacts?projectId=' + encodeURIComponent(S.projectId)).catch(() => []);
+}
+
+function renderChat() {
+  const v = $('#view');
+  const empty = !S.chat || !S.chat.messages.length;
+  $('#chatTitle').value = S.chat?.title || '';
+  if (empty) {
+    const p = project();
+    const hour = new Date().getHours();
+    const nm = S.st.config.profile?.name ? ', ' + S.st.config.profile.name : '';
+    const greet = (hour < 6 ? 'Trabajando tarde' : hour < 13 ? 'Buenos días' : hour < 21 ? 'Buenas tardes' : 'Buenas noches') + nm;
+    v.innerHTML = `<div class="home"><div class="greet"><img src="/icon.svg" alt=""><span>${greet}${p ? ', ¿qué hacemos en <i>' + esc(p.name) + '</i>?' : ''}</span></div><div id="homeComposer" style="width:100%;display:flex;justify-content:center"></div>
+      <div class="suggest">${suggestions().map(s => `<button data-sug="${esc(s)}">${esc(s)}</button>`).join('')}</div></div>`;
+    $('#homeComposer').appendChild(composer());
+    $$('[data-sug]').forEach(b => b.onclick = () => { const ta = $('#prompt'); ta.value = b.dataset.sug; ta.focus(); autosize(ta); });
+    $('#prompt')?.focus();
+    return;
+  }
+  v.innerHTML = `<div class="thread" id="thread">${S.chat.messages.map(renderMessage).join('')}</div>`;
+  $('#composerWrap').appendChild(composer());
+  $('#composerWrap').insertAdjacentHTML('beforeend', '<div class="hint">El orquestador reparte la tarea entre agentes. Revisa los cambios antes de aplicarlos.</div>');
+  v.scrollTop = v.scrollHeight;
+}
+
+function suggestions() {
+  const p = project();
+  const mc = agentById('launcher') || /minecraft|mod |fabric|forge/i.test(p?.brief || '');
+  if (mc) return ['¿Por qué crashea mi instancia?', 'Modelo 3D y animaciones para un mob nuevo', 'Diseña un bioma y su lore', 'Busca la última versión de Fabric API'];
+  if (p?.path) return ['Explícame la estructura de este proyecto', 'Busca bugs probables en el código', 'Propón las 3 mejoras más importantes', 'Escribe el README'];
+  return ['Compara modelos para generar código', 'Ayúdame a planificar un proyecto nuevo', 'Busca información actual sobre un tema', 'Resume una idea en puntos'];
+}
+
+function agentBadge(a, model) {
+  const ag = agentById(a) || {};
+  return `<span class="agent-ico" style="background:${esc(ag.color || '#999')}22">${agentIcon(ag, 15)}</span><span class="name">${esc(ag.name || a)}</span>${model ? `<span class="model">${esc(model)}</span>` : ''}`;
+}
+
+function usageMeta(u) {
+  if (!u) return '';
+  if (u.demo) return '<span>demo</span>';
+  const tok = (u.input || 0) + (u.output || 0) + (u.cacheRead || 0);
+  return `<span title="entrada ${fmtN(u.input)} · salida ${fmtN(u.output)} · caché ${fmtN(u.cacheRead)}">${fmtTok(tok)} tok</span>${u.cost ? `<span>${fmtUsd(u.cost)}</span>` : ''}`;
+}
+
+function artChip(id, title, version, applied) {
+  return `<button class="art-chip ${applied ? 'applied' : ''}" data-art="${esc(id)}">${ico('layers', 14)} ${esc(title)} <span class="v">v${version}</span></button>`;
+}
+
+function renderStep(s, single, open = true) {
+  const tools = (s.tools || []).map(t => `<div class="tool-row">${ico('wrench', 13)} <b>${esc(t.name)}</b> ${esc(t.input)}</div>`).join('');
+  const arts = (s.artifacts || []).map(id => { const a = S.artifacts.find(x => x.id === id); return a ? artChip(a.id, a.title, a.versions, a.appliedVersion) : ''; }).join('');
+  return `<div class="step ${single ? 'single' : ''} ${open ? '' : 'closed'}" data-step="${esc(s.id)}">
+    <div class="step-head">${agentBadge(s.agentId, s.model)}<span class="meta">${usageMeta(s.usage)}${single ? '' : '<span class="caret">' + ico('chevron', 14) + '</span>'}</span></div>
+    <div class="step-body">${!single && s.task ? `<div class="step-task">${esc(s.task.slice(0, 400))}</div>` : ''}<div class="tools">${tools}</div><div class="md ${s.error ? 'err' : ''}">${md(s.text)}</div>${arts ? `<div class="art-chips">${arts}</div>` : ''}</div></div>`;
+}
+
+function renderMessage(m) {
+  if (m.role === 'user') {
+    const att = (m.attachments || []).map(f => `<span class="chip">${ico('file', 13)} ${esc(f)}</span>`).join('');
+    const md0 = m.mode && m.mode !== 'auto' ? MODES.find(x => x.id === m.mode) : null;
+    return `<div class="msg-user"><div>${md0 ? `<div class="att" style="margin:0 0 4px"><span class="chip">${ico(md0.icon, 12)} ${md0.label}</span></div>` : ''}<div class="bubble">${esc(m.content)}</div>${att ? `<div class="att">${att}</div>` : ''}</div></div>`;
+  }
+  const steps = m.steps || [];
+  if (!steps.length) return `<div class="msg-ai"><div class="step single"><div class="step-head">${agentBadge('orquestador')}<span class="meta">${usageMeta(m.planUsage)}</span></div><div class="md">${md(m.content)}</div></div></div>`;
+  const plan = steps.length > 1 ? `<div class="plan-line">Plan: ${steps.map(s => `${agentIcon(agentById(s.agentId), 14)} ${esc(s.agentName)}`).join(' <span class="arrow">→</span> ')}${m.planUsage ? ` · <span title="Planificación">${usageMeta(m.planUsage)}</span>` : ''}</div>` : '';
+  return `<div class="msg-ai">${plan}${steps.map(s => renderStep(s, steps.length === 1, true)).join('')}</div>`;
+}
+
+function composer() {
+  const wrap = document.createElement('div');
+  wrap.className = 'composer';
+  const ags = agents().filter(a => a.id !== 'orquestador');
+  wrap.innerHTML = `<div class="att" id="attList"></div>
+    <textarea id="prompt" rows="1" placeholder="${S.chat?.messages?.length ? 'Responde…' : '¿En qué te ayudo hoy?'}"></textarea>
+    <div class="composer-bar">
+      <button class="icon-btn" id="attachBtn" title="Adjuntar archivos del proyecto">${ico('plus', 18)}</button>
+      <button class="picker" id="agentPick" title="Quién responde"></button>
+      <button class="picker" id="modePick" title="Modo de permisos"></button>
+      <button class="picker" id="effPick" title="Nivel de esfuerzo"></button>
+      <span class="spacer"></span>
+      ${S.st.config.routing.economy ? `<span class="chip eco" title="Modo ahorro: se prueban primero los modelos gratuitos">${ico('zap', 12)} ahorro</span>` : ''}
+      <button class="send ${S.streaming ? 'stop' : ''}" id="sendBtn" title="${S.streaming ? 'Dejar de mostrar' : 'Enviar'}">${S.streaming ? ico('stop', 14) : ico('arrowUp', 17, 2.2)}</button>
+    </div>`;
+  const ta = $('#prompt', wrap), pick = $('#agentPick', wrap), sendBtn = $('#sendBtn', wrap);
+  const drawPick = () => {
+    const a = S.agent === 'auto' ? null : agentById(S.agent);
+    pick.innerHTML = a ? `${agentIcon(a, 15)}<span>${esc(a.name)}</span><span class="m">${esc(a.model.split(':').pop())}</span>${ico('chevron', 14)}`
+      : `${agentIcon(agentById('orquestador'), 15)}<span>Equipo</span>${ico('chevron', 14)}`;
+  };
+  drawPick();
+  const modePick = $('#modePick', wrap), effPick = $('#effPick', wrap);
+  const drawMode = () => { const m = MODES.find(x => x.id === curMode()) || MODES[0]; modePick.innerHTML = `${ico(m.icon, 14)}<span>${m.label}</span>`; modePick.classList.toggle('warn', m.id === 'bypass'); };
+  const drawEff = () => { const e = EFFORTS.find(x => x[0] === S.effort) || EFFORTS[0]; effPick.innerHTML = `${ico('chart', 14)}<span>${S.effort === 'agent' ? 'Esfuerzo' : e[1]}</span>`; };
+  drawMode(); drawEff();
+  const EFF_DESC = { agent: 'El configurado en cada agente (por defecto, medio)', low: 'Rápido y barato', medium: 'Equilibrado', high: 'Piensa más', xhigh: 'Para tareas difíciles', max: 'Sin límite de razonamiento' };
+  modePick.onclick = () => menu(modePick, MODES.map(m => ({ label: `${ico(m.icon, 16)}<div><div>${m.label}${m.id === curMode() ? ' ' + ico('tick', 13) : ''}</div><div class="sub wrap">${m.desc}</div></div>`, run: () => { S.mode = m.id; store.set('mode', m.id); drawMode(); } })));
+  effPick.onclick = () => menu(effPick, EFFORTS.map(([k, l]) => ({ label: `${ico('chart', 16)}<div><div>${l}${k === S.effort ? ' ' + ico('tick', 13) : ''}</div><div class="sub wrap">${EFF_DESC[k]}</div></div>`, run: () => { S.effort = k; store.set('effort', k); drawEff(); } })));
+  pick.onclick = () => menu(pick, [
+    { label: `${agentIcon(agentById('orquestador'), 16)}<div><div>Equipo (automático)</div><div class="sub">El orquestador reparte entre agentes</div></div>`, run: () => { S.agent = 'auto'; drawPick(); } },
+    '-',
+    ...ags.map(a => ({ label: `${agentIcon(a, 16)}<div><div>${esc(a.name)}</div><div class="sub">${esc(a.model)}</div></div>`, run: () => { S.agent = a.id; drawPick(); } })),
+  ]);
+  ta.addEventListener('input', () => { autosize(ta); sendBtn.disabled = !S.streaming && !ta.value.trim(); });
+  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!S.streaming) send(); } });
+  sendBtn.disabled = !S.streaming;
+  sendBtn.onclick = () => S.streaming ? stopStream() : send();
+  $('#attachBtn', wrap).onclick = attachDialog;
+  renderAttachments(wrap);
+  return wrap;
+}
+function curMode() { return S.mode || S.st?.config?.defaults?.mode || 'auto'; }
+function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 280) + 'px'; }
+function renderAttachments(root = document) {
+  const el = $('#attList', root); if (!el) return;
+  el.innerHTML = S.attachments.map((f, i) => `<span class="chip">${ico('file', 13)} ${esc(f)}<button data-rm-att="${i}">${ico('x', 14)}</button></span>`).join('');
+  $$('[data-rm-att]', el).forEach(b => b.onclick = () => { S.attachments.splice(+b.dataset.rmAtt, 1); renderAttachments(); });
+}
+
+async function attachDialog() {
+  const p = project();
+  if (!p?.path) return toast('Este proyecto no tiene carpeta. Asígnale una en Proyectos.');
+  const { files } = await api('GET', `/api/projects/${p.id}/tree`);
+  const o = modal('Adjuntar archivos de ' + esc(p.name), `<input type="text" id="ff" placeholder="Filtrar… (ej. lang, models/item, .java)"><div class="file-list" id="fl" style="margin-top:10px"></div><p class="muted" style="font-size:12.5px">Los agentes con herramientas ya pueden leer el proyecto por su cuenta; adjunta solo si quieres forzar contexto.</p>`,
+    [{ label: 'Cancelar' }, { label: 'Adjuntar', cls: 'primary', run: o => { S.attachments = [...new Set([...S.attachments, ...$$('input[type=checkbox]:checked', o).map(c => c.value)])].slice(0, 8); renderAttachments(); } }]);
+  const draw = q => { $('#fl', o).innerHTML = files.filter(f => f.toLowerCase().includes(q.toLowerCase())).slice(0, 400).map(f => `<label><input type="checkbox" value="${esc(f)}" ${S.attachments.includes(f) ? 'checked' : ''}>${esc(f)}</label>`).join('') || '<div class="muted">Sin coincidencias</div>'; };
+  draw(''); $('#ff', o).oninput = e => draw(e.target.value); $('#ff', o).focus();
+}
+
+$('#chatTitle').addEventListener('change', async e => {
+  if (!S.chat) return;
+  S.chat.title = e.target.value.trim() || 'Nuevo chat';
+  await api('PATCH', '/api/chats/' + S.chat.id, { title: S.chat.title });
+  const c = S.st.chats.find(x => x.id === S.chat.id); if (c) c.title = S.chat.title;
+  renderSidebar();
+});
+
+function stopStream() { S.abort?.abort(); }
+
+async function send() {
+  const ta = $('#prompt'); const text = ta.value.trim();
+  if (!text || S.streaming) return;
+  if (!S.chat) {
+    S.chat = await api('POST', '/api/chats', { projectId: S.projectId });
+    S.chatId = S.chat.id;
+  }
+  const attachments = [...S.attachments];
+  S.chat.messages.push({ role: 'user', content: text, attachments, mode: curMode() });
+  S.attachments = [];
+  S.streaming = true;
+  render();
+  const thread = $('#thread');
+  const live = document.createElement('div'); live.className = 'msg-ai';
+  live.innerHTML = `<div class="status-line" id="liveStatus"><svg class="spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg><span>Pensando…</span></div>`;
+  thread.appendChild(live);
+  const view = $('#view');
+  const stick = () => { if (view.scrollHeight - view.scrollTop - view.clientHeight < 260) view.scrollTop = view.scrollHeight; };
+  stick();
+
+  const steps = {}; // stepId -> {el, text, dirty}
+  let single = false;
+  const flush = () => { for (const s of Object.values(steps)) if (s.dirty) { $('.md', s.el).innerHTML = md(s.text); s.dirty = false; } stick(); };
+  const timer = setInterval(flush, 70);
+  const status = t => { const st = $('#liveStatus span', live); if (st) st.textContent = t; };
+
+  S.abort = new AbortController();
+  try {
+    const res = await fetch(`/api/chats/${S.chat.id}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, agentId: S.agent, attachments, mode: curMode(), effort: S.effort === 'agent' ? '' : S.effort }), signal: S.abort.signal });
+    if (!res.ok) throw new Error(await res.text());
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const raw = buf.slice(0, i); buf = buf.slice(i + 2);
+        let ev = 'message', data = '';
+        for (const line of raw.split('\n')) { if (line.startsWith('event:')) ev = line.slice(6).trim(); else if (line.startsWith('data:')) data += line.slice(5).trim(); }
+        if (!data) continue;
+        const d = JSON.parse(data);
+        handle(ev, d);
+      }
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') status('Dejé de mostrarlo aquí; el trabajo sigue y quedará guardado en el chat.');
+    else live.insertAdjacentHTML('beforeend', `<div class="err">${ico('alert', 14)} ${esc(err.message)}</div>`);
+  } finally {
+    clearInterval(timer); flush();
+    S.streaming = false; S.abort = null;
+    try {
+      S.chat = await api('GET', '/api/chats/' + S.chat.id);
+      await refreshArtifacts(); await loadState();
+    } catch {}
+    if (S.view === 'chat') render();
+    if (document.body.classList.contains('panel-open')) renderPanel();
+  }
+
+  function handle(ev, d) {
+    if (ev === 'status') status(d.text);
+    else if (ev === 'plan') {
+      S.lastPlan = { steps: d.steps, ctx: {} };
+      if (d.reply) { $('#liveStatus', live)?.remove(); live.insertAdjacentHTML('beforeend', `<div class="step single"><div class="step-head">${agentBadge('orquestador')}</div><div class="md">${md(d.reply)}</div></div>`); return; }
+      single = d.steps.length === 1;
+      if (!single) live.insertAdjacentHTML('afterbegin', `<div class="plan-line">Plan: ${d.steps.map(s => `${agentIcon(agentById(s.agent), 14)} ${esc(s.agentName || s.agent)}`).join(' <span class="arrow">→</span> ')}</div>`);
+      status(single ? 'Trabajando…' : `Ejecutando ${d.steps.length} pasos…`);
+    } else if (ev === 'step_start') {
+      S.lastPlan && (S.lastPlan.ctx[d.stepId] = d);
+      const html = renderStep({ id: d.stepId, agentId: d.agent, model: d.model, task: d.task, text: '' }, single, true);
+      $('#liveStatus', live)?.insertAdjacentHTML('beforebegin', html);
+      const el = $(`[data-step="${CSS.escape(d.stepId)}"]`, live);
+      $('.meta', el).insertAdjacentHTML('afterbegin', `<span class="dot run"></span><span title="Contexto estimado enviado">~${fmtTok(d.context?.estTokens || 0)} ctx</span>`);
+      steps[d.stepId] = { el, text: '', dirty: false };
+      if (document.body.classList.contains('panel-open') && S.panelTab === 'board') renderPanel();
+    } else if (ev === 'delta') { const s = steps[d.stepId]; if (s) { s.text += d.text; s.dirty = true; } }
+    else if (ev === 'tool') { const s = steps[d.stepId]; if (s) { const inp = Object.entries(d.input || {}).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' '); $('.tools', s.el).insertAdjacentHTML('beforeend', `<div class="tool-row">${ico('wrench', 13)} <b>${esc(d.name)}</b> ${esc(inp.slice(0, 200))}</div>`); } }
+    else if (ev === 'artifact') {
+      const s = steps[d.stepId]; if (!s) return;
+      let box = $('.art-chips', s.el); if (!box) { $('.step-body', s.el).insertAdjacentHTML('beforeend', '<div class="art-chips"></div>'); box = $('.art-chips', s.el); }
+      $(`[data-art="${CSS.escape(d.id)}"]`, box)?.remove();
+      box.insertAdjacentHTML('beforeend', artChip(d.id, d.title, d.version, d.applied));
+    } else if (ev === 'step_done') {
+      const s = steps[d.stepId]; if (!s) return;
+      const meta = $('.meta', s.el); $('.dot', meta)?.remove();
+      const mc = $('.model', s.el); if (mc && d.model) mc.textContent = d.model;
+      if (d.fallbacks?.length) $('.tools', s.el).insertAdjacentHTML('afterbegin', `<div class="tool-row" title="${esc(d.fallbacks.join('\n'))}">${ico('refresh', 13)} <b>respaldo</b> ${d.fallbacks.length} modelo(s) fallaron; se usó ${esc(d.model)}</div>`);
+      meta.insertAdjacentHTML('afterbegin', usageMeta(d.usage));
+    } else if (ev === 'step_error') { const s = steps[d.stepId]; if (s) { s.text += `\n\n> Error: ${d.error}`; s.dirty = true; } }
+    else if (ev === 'approval') {
+      const s = steps[d.stepId]; const host = s ? $('.step-body', s.el) : live;
+      const what = { edit: 'quiere escribir un archivo', exec: 'quiere ejecutar un comando', mcp: 'quiere hacer un cambio' }[d.kind] || 'pide permiso';
+      host.insertAdjacentHTML('beforeend', `<div class="approval" data-ap="${esc(d.id)}"><div class="row">${ico(d.kind === 'exec' ? 'code' : d.kind === 'mcp' ? 'plug' : 'pencil', 16)}<b>${esc(d.tool)}</b><span class="muted">${what}</span></div><pre>${esc(d.detail)}</pre><div class="row"><button class="btn primary sm" data-allow="1">Permitir</button><button class="btn sm" data-allow="0">Denegar</button></div></div>`);
+      stick();
+    } else if (ev === 'approval_done') {
+      const el = document.querySelector(`[data-ap="${CSS.escape(d.id)}"]`);
+      if (el) el.outerHTML = `<div class="tool-row">${ico(d.allowed ? 'tick' : 'x', 13)} <b>${d.allowed ? 'Permitido' : 'Denegado'}</b></div>`;
+    }
+    else if (ev === 'error') { $('#liveStatus', live)?.remove(); live.insertAdjacentHTML('beforeend', `<div class="err">${ico('alert', 14)} ${esc(d.error)}</div>`); }
+    else if (ev === 'done') $('#liveStatus', live)?.remove();
+  }
+}
+
+// Acciones delegadas: código, artefactos, pasos plegables
+document.addEventListener('click', async e => {
+  const head = e.target.closest('.step:not(.single) > .step-head');
+  if (head) { head.parentElement.classList.toggle('closed'); return; }
+  const b = e.target.closest('[data-act]');
+  if (b) {
+    const c = S.code[+b.dataset.ci];
+    if (!c) return;
+    if (b.dataset.act === 'copy-code') { await navigator.clipboard.writeText(c.text); b.textContent = 'Copiado'; setTimeout(() => b.textContent = 'Copiar', 1200); }
+    if (b.dataset.act === 'preview-code') openPreview(c.text, c.lang);
+    if (b.dataset.act === 'save-code') {
+      const a = S.artifacts.find(x => x.path === c.path);
+      if (!a) return toast('No encuentro el artefacto de ese archivo.');
+      if (!confirm(`¿Escribir ${c.path} en la carpeta del proyecto? Se guarda copia del archivo anterior.`)) return;
+      await api('POST', `/api/artifacts/${a.id}/apply`, { version: 0 });
+      toast('Guardado ' + c.path); await refreshArtifacts();
+    }
+    return;
+  }
+  const ap = e.target.closest('[data-allow]');
+  if (ap) { const card = ap.closest('[data-ap]'); $('button', card).forEach(x => x.disabled = true); api('POST', `/api/approvals/${encodeURIComponent(card.dataset.ap)}`, { allow: ap.dataset.allow === '1' }).catch(err => toast(err.message)); return; }
+  const art = e.target.closest('[data-art]');
+  if (art) openArtifact(art.dataset.art);
+});
+
+// ---------- Panel derecho ----------
+$('#panelBtn').onclick = () => { document.body.classList.toggle('panel-open'); if (document.body.classList.contains('panel-open')) renderPanel(); };
+$('#closePanel').onclick = () => document.body.classList.remove('panel-open');
+$$('#panelTabs button').forEach(b => b.onclick = () => { S.panelTab = b.dataset.tab; renderPanel(); });
+
+function openArtifact(id) { S.artifactId = id; S.preview = null; S.panelTab = 'artifact'; document.body.classList.add('panel-open'); renderPanel(); }
+function openPreview(text, lang) { S.preview = { text, lang }; S.artifactId = null; S.panelTab = 'artifact'; document.body.classList.add('panel-open'); renderPanel(); }
+
+async function renderPanel() {
+  $$('#panelTabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.panelTab));
+  const body = $('#panelBody');
+  if (S.panelTab === 'board') {
+    const p = project();
+    if (!p) { body.innerHTML = '<div class="muted">Elige un proyecto.</div>'; return; }
+    const bb = await api('GET', `/api/projects/${p.id}/blackboard`);
+    const plan = S.lastPlan ? Object.values(S.lastPlan.ctx) : [];
+    body.innerHTML = `
+      <h3>Contexto del último envío</h3>
+      ${plan.length ? plan.map(c => `<div class="ev"><span class="who">${agentIcon(agentById(c.agent), 14)} ${esc(c.agentName)}</span> <span class="muted mono">~${fmtTok(c.context?.estTokens)} tok</span>
+        <div class="muted" style="font-size:12.5px;margin-top:4px">${c.mode ? (MODES.find(x => x.id === c.mode)?.label || c.mode) + ' · ' : ''}${c.effort ? 'esfuerzo ' + esc(c.effort) + ' · ' : ''}${c.context?.mcp ? ico('plug', 12) + ' ' + c.context.mcp + ' herramientas MCP · ' : ''}${c.context?.tools ? ico('wrench', 12) + ' herramientas · ' : ''}${(c.context?.files || []).length ? ico('file', 12) + ' ' + c.context.files.map(esc).join(', ') + ' · ' : ''}${(c.context?.skills || []).length ? ico('sparkle', 12) + ' ' + c.context.skills.map(esc).join(', ') : ''}</div></div>`).join('') : '<div class="muted" style="font-size:13px">Envía algo para ver qué contexto recibe cada agente.</div>'}
+      <h3>Memoria del proyecto</h3>
+      <div class="ev md" style="font-size:13px">${bb.summary ? md(bb.summary) : '<span class="muted">Vacía. Se rellena sola cuando la pizarra crece (compresión).</span>'}</div>
+      <h3>Pizarra compartida <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· ${fmtTok(bb.liveTokens)} tok activos</span></h3>
+      ${bb.events.length ? bb.events.slice().reverse().map(e => `<div class="ev" style="${e.compressed ? 'opacity:.55' : ''}"><span class="when">${ago(e.ts)}</span><span class="who">${esc(agentById(e.agentId)?.icon || '')} ${esc(e.agentName)}</span><div class="muted" style="font-size:12.5px;margin:2px 0 4px">${esc(e.task.slice(0, 160))}</div>${esc(e.summary)}</div>`).join('') : '<div class="muted" style="font-size:13px">Aún no hay actividad. Todo lo que hagan los agentes queda aquí resumido y lo ven los demás.</div>'}
+      ${bb.events.length ? '<div style="margin-top:10px"><button class="btn sm danger" id="clearBb">Vaciar pizarra y memoria</button></div>' : ''}`;
+    $('#clearBb')?.addEventListener('click', async () => { if (confirm('¿Vaciar la pizarra y la memoria de este proyecto?')) { await api('DELETE', `/api/projects/${p.id}/blackboard`); renderPanel(); } });
+    return;
+  }
+  // Artefacto
+  if (S.preview) {
+    body.innerHTML = `<div class="art-view"><iframe sandbox="allow-scripts" id="prevFrame"></iframe></div>`;
+    $('#prevFrame').srcdoc = S.preview.lang === 'svg' ? `<body style="margin:0;display:grid;place-items:center;height:100vh">${S.preview.text}</body>` : S.preview.text;
+    return;
+  }
+  if (!S.artifactId) { body.innerHTML = '<div class="muted">Abre un artefacto desde el chat o desde la vista Artefactos.</div>'; return; }
+  const a = await api('GET', '/api/artifacts/' + S.artifactId);
+  const vIdx = Math.min(S.artVersion || a.versions.length, a.versions.length);
+  const ver = a.versions[vIdx - 1];
+  const previewable = ['html', 'svg'].includes(a.lang);
+  const mode = S.artMode && previewable ? S.artMode : (previewable ? 'preview' : 'code');
+  body.innerHTML = `<div class="art-view">
+    <div class="row" style="margin-bottom:10px"><b style="font-size:15px">${ico('layers', 14)} ${esc(a.title)}</b>
+      <select class="sel" id="artVer">${a.versions.map((v, i) => `<option value="${i + 1}" ${i + 1 === vIdx ? 'selected' : ''}>v${i + 1} · ${esc(agentById(v.agentId)?.name || v.agentId)} · ${ago(v.ts)}</option>`).join('')}</select>
+      ${previewable ? `<div class="tabs"><button data-m="preview" class="${mode === 'preview' ? 'on' : ''}">Vista</button><button data-m="code" class="${mode === 'code' ? 'on' : ''}">Código</button></div>` : ''}</div>
+    <div class="muted mono" style="margin-bottom:8px">${a.path ? esc(a.path) : 'sin ruta'} ${a.appliedVersion ? `· aplicado v${a.appliedVersion}` : '· sin aplicar'}</div>
+    ${mode === 'preview' ? '<iframe sandbox="allow-scripts" id="artFrame"></iframe>' : `<pre>${esc(ver.content)}</pre>`}
+    <div class="row" style="margin-top:10px">
+      ${a.projectId ? `<button class="btn primary sm" id="artApply">${a.path ? 'Aplicar al proyecto' : 'Guardar en proyecto…'}</button>` : ''}
+      <button class="btn sm" id="artCopy">Copiar</button><button class="btn sm" id="artDl">Descargar</button>
+      <span style="flex:1"></span><button class="btn sm danger" id="artDel">Eliminar</button></div></div>`;
+  if (mode === 'preview') $('#artFrame').srcdoc = a.lang === 'svg' ? `<body style="margin:0;display:grid;place-items:center;height:100vh">${ver.content}</body>` : ver.content;
+  $('#artVer').onchange = e => { S.artVersion = +e.target.value; renderPanel(); };
+  $$('.art-view .tabs button').forEach(b => b.onclick = () => { S.artMode = b.dataset.m; renderPanel(); });
+  $('#artCopy').onclick = async () => { await navigator.clipboard.writeText(ver.content); toast('Copiado'); };
+  $('#artDl').onclick = () => { const url = URL.createObjectURL(new Blob([ver.content], { type: 'text/plain' })); const l = document.createElement('a'); l.href = url; l.download = a.title; l.click(); URL.revokeObjectURL(url); };
+  $('#artDel').onclick = async () => { if (!confirm('¿Eliminar este artefacto (no borra archivos del disco)?')) return; await api('DELETE', '/api/artifacts/' + a.id); S.artifactId = null; await refreshArtifacts(); renderPanel(); };
+  $('#artApply')?.addEventListener('click', async () => {
+    let path = a.path;
+    if (!path) { path = prompt('Ruta relativa dentro del proyecto:', a.title); if (!path) return; }
+    if (!confirm(`¿Escribir ${path} (v${vIdx}) en la carpeta del proyecto? Se hace copia del anterior.`)) return;
+    await api('POST', `/api/artifacts/${a.id}/apply`, { version: vIdx, path });
+    toast('Aplicado: ' + path); await refreshArtifacts(); renderPanel();
+  });
+}
+
+// ---------- Vistas ----------
+async function viewChats(v) {
+  const list = S.st.chats.filter(c => c.projectId === S.projectId);
+  v.innerHTML = `<div class="page"><h1>Chats</h1><p class="lead">${esc(project()?.name || '')} · ${list.length} conversaciones</p>
+    <input type="text" id="q" placeholder="Buscar en títulos…" style="margin-bottom:12px">
+    <div id="cl"></div></div>`;
+  const draw = q => { $('#cl').innerHTML = list.filter(c => (c.title || '').toLowerCase().includes(q.toLowerCase())).map(c => `<div class="card click" data-chat-open="${c.id}" style="margin-bottom:8px;padding:10px 14px"><div class="row"><b style="flex:1">${esc(c.title)}</b><span class="muted" style="font-size:12.5px">${c.count} mensajes · ${ago(c.updatedAt)}</span></div></div>`).join('') || '<div class="empty">Nada por aquí.</div>'; $$('[data-chat-open]').forEach(el => el.onclick = () => openChat(el.dataset.chatOpen)); };
+  draw(''); $('#q').oninput = e => draw(e.target.value);
+}
+
+async function newProjectFromFolder() {
+  toast('Elige la carpeta en el diálogo de Windows…');
+  const { path } = await api('POST', '/api/pick-folder');
+  if (!path) return;
+  const p = await api('POST', '/api/projects', { path, name: '', brief: '' });
+  await loadState(); setProject(p.id); editProject(p.id);
+}
+
+async function viewProjects(v) {
+  const ps = S.st.projects;
+  v.innerHTML = `<div class="page"><h1>Proyectos</h1><p class="lead">Cada proyecto tiene su carpeta, su ficha (contexto fijo que se cachea) y su propia pizarra compartida.</p>
+    <div class="row" style="margin-bottom:16px"><button class="btn primary" id="np">${ico('plus', 14)} Añadir carpeta del ordenador</button><button class="btn" id="np2">Proyecto sin carpeta</button></div>
+    <div class="cards">${ps.map(p => `<div class="card click" data-p="${p.id}"><h3><span class="proj-dot" style="background:${esc(p.color || '#999')}"></span>${esc(p.name)}${p.id === S.projectId ? ' <span class="chip" style="font-size:11px">actual</span>' : ''}</h3>
+      <div class="mono muted" style="margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.path || 'sin carpeta')}</div>
+      <p class="desc">${esc((p.brief || 'Sin ficha. Añade una descripción para que todos los agentes la conozcan.').slice(0, 180))}</p>
+      <div class="row"><button class="btn sm" data-use="${p.id}">Usar</button><button class="btn sm" data-edit="${p.id}">Editar</button>${p.path ? `<button class="btn sm" data-open="${p.id}">Abrir carpeta</button>` : ''}${p.allowWrites ? `<span class="chip" title="Los agentes escriben directamente (con copia de seguridad)">${ico('pencil', 12)} escritura directa</span>` : ''}</div></div>`).join('')}</div></div>`;
+  $('#np').onclick = newProjectFromFolder;
+  $('#np2').onclick = async () => { const name = prompt('Nombre del proyecto:'); if (!name) return; const p = await api('POST', '/api/projects', { name }); await loadState(); setProject(p.id); };
+  $$('[data-use]').forEach(b => b.onclick = e => { e.stopPropagation(); setProject(b.dataset.use); S.view = 'chat'; renderSidebar(); render(); });
+  $$('[data-edit]').forEach(b => b.onclick = e => { e.stopPropagation(); editProject(b.dataset.edit); });
+  $$('[data-open]').forEach(b => b.onclick = e => { e.stopPropagation(); api('POST', `/api/projects/${b.dataset.open}/open`); });
+  $$('[data-p]').forEach(c => c.onclick = () => editProject(c.dataset.p));
+}
+
+function editProject(id) {
+  const p = S.st.projects.find(x => x.id === id); if (!p) return;
+  modal('Proyecto', `<div class="form">
+    <div class="two"><label>Nombre<input type="text" id="pn" value="${esc(p.name)}"></label><label>Color<input type="text" id="pc" value="${esc(p.color || '#d97757')}"></label></div>
+    <label>Carpeta<div class="row" style="flex-wrap:nowrap"><input type="text" id="pp" value="${esc(p.path)}"><button class="btn" id="pick">Elegir…</button></div></label>
+    <label>Ficha del proyecto (todos los agentes la ven; se cachea, así que sale barata)<textarea class="in" id="pb" rows="7">${esc(p.brief)}</textarea></label>
+    <label>Convenciones (estilo, reglas, cosas que NO tocar)<textarea class="in" id="pv" rows="4">${esc(p.conventions)}</textarea></label>
+    <label class="check"><input type="checkbox" id="pw" ${p.allowWrites ? 'checked' : ''}> Permitir que los agentes escriban archivos directamente (con copia de seguridad). Si no, quedan como artefactos para que los apliques tú.</label>
+  </div>`, [
+    { label: 'Eliminar', cls: 'danger', run: async () => { if (!confirm('¿Eliminar el proyecto de faisp (no borra la carpeta)? Se borran sus chats y pizarra.')) return true; await api('DELETE', '/api/projects/' + id); await loadState(); render(); } },
+    { label: 'Cancelar' },
+    { label: 'Guardar', cls: 'primary', run: async o => {
+      await api('PATCH', '/api/projects/' + id, { name: $('#pn', o).value, color: $('#pc', o).value, path: $('#pp', o).value, brief: $('#pb', o).value, conventions: $('#pv', o).value, allowWrites: $('#pw', o).checked });
+      await loadState(); render();
+    } },
+  ]);
+  $('#pick').onclick = async () => { const { path } = await api('POST', '/api/pick-folder'); if (path) $('#pp').value = path; };
+}
+
+async function viewArtifacts(v) {
+  await refreshArtifacts();
+  v.innerHTML = `<div class="page"><h1>Artefactos</h1><p class="lead">Archivos, páginas y bloques que generaron los agentes en ${esc(project()?.name || 'este proyecto')}. Cada cambio crea una versión nueva; aplicar escribe en la carpeta con copia de seguridad.</p>
+    ${S.artifacts.length ? `<div class="cards">${S.artifacts.map(a => `<div class="card click" data-art="${a.id}"><h3>${ico('layers', 14)} ${esc(a.title)}</h3><div class="mono muted" style="overflow:hidden;text-overflow:ellipsis">${esc(a.path || a.lang || '')}</div>
+      <p class="desc" style="margin-top:6px">${a.versions} versión(es) · ${esc(agentById(a.agentId)?.name || '')} · ${ago(a.updatedAt)}</p>
+      <div class="row">${a.appliedVersion ? `<span class="chip" style="color:var(--ok)">${ico('tick', 13)} aplicado v${a.appliedVersion}</span>` : '<span class="chip">pendiente</span>'}</div></div>`).join('')}</div>` : '<div class="empty">Aún no hay artefactos. Cuando un agente entregue archivos aparecerán aquí.</div>'}</div>`;
+}
+
+async function viewAgents(v) {
+  const all = agents();
+  const ready = S.st.providerReady;
+  v.innerHTML = `<div class="page"><h1>Agentes</h1><p class="lead">Cada agente es un especialista con su propio modelo. El orquestador reparte el trabajo y todos comparten la pizarra del proyecto.</p>
+    <div class="row" style="margin-bottom:16px"><button class="btn primary" id="na">${ico('plus', 14)} Nuevo agente</button></div>
+    <div class="cards">${all.map(a => { const prov = a.model.split(':')[0]; return `<div class="card click" data-ag="${esc(a.id)}">
+      <h3><span class="agent-ico" style="background:${esc(a.color)}22">${agentIcon(a, 17)}</span>${esc(a.name)}${a.plugin ? ` <span class="chip" style="font-size:11px">${ico('plug', 13)} ${esc(a.plugin)}</span>` : ''}</h3>
+      <p class="desc">${esc(a.description)}</p>
+      <div class="row"><span class="dot ${ready[prov] ? 'on' : ''}" title="${ready[prov] ? 'Proveedor listo' : 'Falta clave → modo demo'}"></span><span class="mono">${esc(a.model)}</span>${a.effort ? `<span class="chip" style="font-size:11px">effort: ${esc(a.effort)}</span>` : ''}${a.tools ? '<span class="chip" style="font-size:11px">' + ico('wrench', 12) + ' archivos</span>' : ''}</div></div>`; }).join('')}</div></div>`;
+  $('#na').onclick = () => editAgent(null);
+  $$('[data-ag]').forEach(c => c.onclick = () => editAgent(c.dataset.ag));
+}
+
+function editAgent(id) {
+  const cfgAgents = S.st.config.agents;
+  const a = id ? (cfgAgents.find(x => x.id === id) || agentById(id)) : { id: '', name: '', icon: 'sparkle', color: '#d97757', model: 'anthropic:claude-sonnet-5-5', effort: 'medium', description: '', keywords: [], system: '', tools: true };
+  const fromPlugin = !!a.plugin;
+  modal(id ? 'Editar agente' : 'Nuevo agente', `<div class="form">
+    ${fromPlugin ? '<div class="muted">Este agente viene de un plugin; edítalo en su plugin.json.</div>' : ''}
+    <div class="three"><label>ID<input type="text" id="ai" value="${esc(a.id)}" ${id ? 'disabled' : ''}></label><label>Nombre<input type="text" id="an" value="${esc(a.name)}"></label><label>Color<input type="text" id="aco" value="${esc(a.color)}"></label></div>
+    <label>Icono<div class="icon-grid" id="aic">${AGENT_ICONS.map(n => `<button type="button" data-ic="${n}" class="${n === a.icon ? 'on' : ''}" title="${n}">${ico(n, 18)}</button>`).join('')}</div></label>
+    <div class="three"><label>Modelo (proveedor:modelo)<input type="text" id="am" list="models" value="${esc(a.model)}"></label>
+      <label>Esfuerzo<select class="in" id="ae">${['', 'low', 'medium', 'high', 'xhigh', 'max'].map(x => `<option ${x === a.effort ? 'selected' : ''} value="${x}">${x || '(por defecto)'}</option>`).join('')}</select></label>
+      <label>Búsqueda web<select class="in" id="aw"><option value="0">No</option><option value="1" ${a.webSearch ? 'selected' : ''}>Sí (Claude / Grok)</option></select></label></div>
+    <label>Modelos de respaldo, en orden (uno por línea). Se usan si el principal no tiene clave, se satura o falla.<textarea class="in code" id="af" rows="3">${esc((a.fallbacks || []).join('\n'))}</textarea></label>
+    <datalist id="models">${MODEL_SUGGESTIONS.map(m => `<option value="${m}">`).join('')}</datalist>
+    <label>Para qué sirve (lo lee el orquestador para repartir)<input type="text" id="ad" value="${esc(a.description)}"></label>
+    <label>Palabras clave (enrutado sin gastar tokens, separadas por comas)<input type="text" id="ak" value="${esc((a.keywords || []).join(', '))}"></label>
+    <label>Instrucciones del sistema<textarea class="in" id="as" rows="8">${esc(a.system)}</textarea></label>
+    <label class="check"><input type="checkbox" id="apf" ${a.preferFree ? 'checked' : ''}> Probar primero los modelos gratuitos o locales de su cadena</label>
+    <label class="check"><input type="checkbox" id="at" ${a.tools ? 'checked' : ''}> Puede explorar y escribir en la carpeta del proyecto (herramientas)</label>
+    <label class="check"><input type="checkbox" id="ax" ${a.disabled ? 'checked' : ''}> Desactivado</label></div>`,
+    fromPlugin ? [{ label: 'Cerrar' }] : [
+      ...(id && id !== 'orquestador' ? [{ label: 'Eliminar', cls: 'danger', run: async () => { if (!confirm('¿Eliminar agente?')) return true; await api('PUT', '/api/agents', cfgAgents.filter(x => x.id !== id)); await loadState(); render(); } }] : []),
+      { label: 'Cancelar' },
+      { label: 'Guardar', cls: 'primary', run: async o => {
+        const n = { ...a, id: id || $('#ai', o).value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-'), name: $('#an', o).value, icon: $('#aic button.on', o)?.dataset.ic || a.icon, model: $('#am', o).value.trim(), effort: $('#ae', o).value, color: $('#aco', o).value,
+          description: $('#ad', o).value, keywords: $('#ak', o).value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean), system: $('#as', o).value, tools: $('#at', o).checked, preferFree: $('#apf', o).checked, webSearch: $('#aw', o).value === '1', fallbacks: $('#af', o).value.split('\n').map(s => s.trim()).filter(Boolean), disabled: $('#ax', o).checked };
+        if (!n.id || !n.name) throw new Error('ID y nombre son obligatorios');
+        const list = id ? cfgAgents.map(x => x.id === id ? n : x) : [...cfgAgents, n];
+        await api('PUT', '/api/agents', list); await loadState(); render();
+      } },
+    ]);
+  $$('#aic button').forEach(b => b.onclick = () => { $$('#aic button').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
+}
+
+async function viewExtensions(v) {
+  const ext = await api('GET', '/api/extensions');
+  v.innerHTML = `<div class="page"><h1>Extensiones</h1><p class="lead">Plugins que añaden agentes, skills, conectores y rutinas. Carpeta: <span class="mono">${esc(ext.dir)}</span></p>
+    <div class="row" style="margin-bottom:6px"><button class="btn" id="ob">Abrir carpeta de plugins</button><button class="btn" id="os">Abrir carpeta de skills</button><button class="btn" id="rl">↻ Recargar</button></div>
+    <section class="block"><h2>Plugins</h2><p>Un plugin es una carpeta con <span class="mono">plugin.json</span> (y opcionalmente <span class="mono">skills/*.md</span>). Se pueden compartir como .zip.</p>
+      <div class="cards">${ext.plugins.map(p => `<div class="card"><h3>${ico('plug', 13)} ${esc(p.name)} <span class="muted" style="font-size:12px;font-weight:400">${esc(p.version || '')}</span></h3><p class="desc">${esc(p.error ? 'Error: ' + p.error : p.description)}</p><div class="row muted" style="font-size:12.5px">${p.agents} agentes · ${p.skills} skills · ${p.connectors} conectores · ${p.routines} rutinas</div></div>`).join('') || '<div class="empty">Sin plugins.</div>'}</div></section>
+    <section class="block"><h2>Skills</h2><p>Instrucciones especializadas que solo se inyectan cuando la tarea las necesita (ahorran tokens frente a un prompt gigante).</p>
+      <div class="row" style="margin-bottom:10px"><button class="btn primary" id="ns">${ico('plus', 14)} Nueva skill</button></div>
+      <table class="table"><tr><th>Skill</th><th>Agentes</th><th>Se activa con</th><th>Origen</th></tr>${ext.skills.map(s => `<tr><td><b>${esc(s.name)}</b><div class="muted" style="font-size:12.5px">${esc(s.description)}</div></td><td>${esc(s.agents.join(', ') || 'todos')}</td><td class="muted">${esc(s.keywords.join(', '))}</td><td>${esc(s.source)}</td></tr>`).join('')}</table></section>
+    <section class="block"><h2>Conectores</h2><p>Fuentes de contexto externas: carpeta, archivo o URL. Se consultan bajo demanda cuando la tarea las menciona.</p>
+      ${ext.connectors.length ? `<table class="table"><tr><th>Conector</th><th>Tipo</th><th>Plugin</th></tr>${ext.connectors.map(c => `<tr><td><b>${esc(c.id)}</b><div class="muted" style="font-size:12.5px">${esc(c.description)}</div></td><td>${esc(c.type)}</td><td>${esc(c.plugin)}</td></tr>`).join('')}</table>` : '<div class="empty" style="padding:24px">Sin conectores. Añádelos en el <span class="mono">plugin.json</span> de un plugin:<br><span class="mono">"connectors":[{"id":"docs","type":"folder","path":"C:/ruta/docs","keywords":"lore, roadmap"}]</span></div>'}</section></div>`;
+  $('#ob').onclick = () => api('POST', '/api/extensions/open', { which: 'plugins' });
+  $('#os').onclick = () => api('POST', '/api/extensions/open', { which: 'skills' });
+  $('#rl').onclick = async () => { await api('POST', '/api/extensions/reload'); await loadState(); render(); toast('Extensiones recargadas'); };
+  $('#ns').onclick = () => modal('Nueva skill', `<div class="form">
+    <div class="two"><label>Nombre<input type="text" id="sn" placeholder="mi-skill"></label><label>Agentes (ids, coma; vacío = todos)<input type="text" id="sa" placeholder="modelos, codigo"></label></div>
+    <label>Descripción<input type="text" id="sd"></label>
+    <label>Palabras clave que la activan<input type="text" id="sk" placeholder="blockbench, animación"></label>
+    <label>Contenido (markdown)<textarea class="in" id="sb" rows="10"></textarea></label></div>`,
+    [{ label: 'Cancelar' }, { label: 'Crear', cls: 'primary', run: async o => { await api('POST', '/api/skills', { name: $('#sn', o).value, agents: $('#sa', o).value, description: $('#sd', o).value, keywords: $('#sk', o).value, body: $('#sb', o).value }); render(); } }]);
+}
+
+async function viewRoutines(v) {
+  const rs = S.st.routines;
+  const pname = id => S.st.projects.find(p => p.id === id)?.name || '—';
+  const sched = s => s.startsWith('every:') ? `cada ${s.slice(6)} min` : s.startsWith('daily:') ? `diaria a las ${s.slice(6)}` : 'manual';
+  v.innerHTML = `<div class="page"><h1>Rutinas</h1><p class="lead">Tareas que se ejecutan solas (o con un clic): informes diarios, revisiones del proyecto, resúmenes… Mientras haya rutinas activas, faisp sigue funcionando en segundo plano aunque cierres la ventana.</p>
+    <div class="row" style="margin-bottom:16px"><button class="btn primary" id="nr">${ico('plus', 14)} Nueva rutina</button></div>
+    ${rs.length ? `<table class="table"><tr><th>Rutina</th><th>Proyecto</th><th>Cuándo</th><th>Última</th><th></th></tr>${rs.map(r => `<tr><td><b>${esc(r.name)}</b>${r.plugin ? ` <span class="chip" style="font-size:11px">${ico('plug', 13)} ${esc(r.plugin)}</span>` : ''}<div class="muted" style="font-size:12.5px">${esc(r.prompt.slice(0, 120))}</div></td><td>${esc(pname(r.projectId))}</td><td>${sched(r.schedule)}</td><td class="muted">${r.lastRun ? ago(r.lastRun) : '—'}</td>
+      <td class="n"><label class="check" style="display:inline-flex!important"><input type="checkbox" data-en="${esc(r.id)}" ${r.enabled ? 'checked' : ''}>activa</label> <button class="btn sm" data-run="${esc(r.id)}">Ejecutar</button> ${r.chatId ? `<button class="btn sm" data-oc="${esc(r.chatId)}">Ver</button>` : ''} <button class="btn sm danger" data-rd="${esc(r.id)}">${ico('x', 14)}</button></td></tr>`).join('')}</table>` : '<div class="empty">Sin rutinas. Ejemplo: "Cada día a las 9:00, revisa docs/ROADMAP.md y dime qué toca hoy".</div>'}</div>`;
+  $('#nr').onclick = () => modal('Nueva rutina', `<div class="form">
+    <label>Nombre<input type="text" id="rn" placeholder="Resumen diario"></label>
+    <div class="two"><label>Proyecto<select class="in" id="rp">${S.st.projects.map(p => `<option value="${p.id}" ${p.id === S.projectId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+      <label>Agente<select class="in" id="ra"><option value="">Auto (orquestador)</option>${agents().filter(a => a.id !== 'orquestador').map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></label></div>
+    <div class="two"><label>Frecuencia<select class="in" id="rt"><option value="daily">Diaria</option><option value="every">Cada N minutos</option><option value="manual">Manual</option></select></label><label>Valor<input type="text" id="rv" value="09:00" placeholder="09:00 o 60"></label></div>
+    <label>Instrucción<textarea class="in" id="rpr" rows="5" placeholder="Revisa docs/ROADMAP.md y los cambios recientes; dime qué toca hoy en 5 puntos."></textarea></label></div>`,
+    [{ label: 'Cancelar' }, { label: 'Crear', cls: 'primary', run: async o => {
+      const t = $('#rt', o).value; const schedule = t === 'manual' ? 'manual' : `${t}:${$('#rv', o).value.trim()}`;
+      await api('POST', '/api/routines', { name: $('#rn', o).value || 'Rutina', projectId: $('#rp', o).value, agentId: $('#ra', o).value || null, schedule, prompt: $('#rpr', o).value, enabled: t !== 'manual' });
+      await loadState(); render();
+    } }]);
+  $$('[data-en]').forEach(c => c.onchange = async () => { await api('POST', '/api/routines', { ...rs.find(r => r.id === c.dataset.en), enabled: c.checked }); await loadState(); });
+  $$('[data-run]').forEach(b => b.onclick = async () => { const r = await api('POST', `/api/routines/${encodeURIComponent(b.dataset.run)}/run`); toast('Rutina en marcha'); await loadState(); setTimeout(() => openChat(r.chatId), 600); });
+  $$('[data-oc]').forEach(b => b.onclick = () => openChat(b.dataset.oc));
+  $$('[data-rd]').forEach(b => b.onclick = async () => { if (!confirm('¿Eliminar rutina?')) return; await api('DELETE', `/api/routines/${encodeURIComponent(b.dataset.rd)}`); await loadState(); render(); });
+}
+
+async function viewUsage(v) {
+  const u = await api('GET', '/api/usage');
+  const t = u.totals;
+  const max = Math.max(1, ...u.byDay.map(d => d.tokens));
+  const pname = id => S.st.projects.find(p => p.id === id)?.name || '(sin proyecto)';
+  const table = (rows, label, nameFn = x => x) => `<table class="table"><tr><th>${label}</th><th class="n">Llamadas</th><th class="n">Entrada</th><th class="n">Salida</th><th class="n">Caché</th><th class="n">Coste</th></tr>${rows.map(r => `<tr><td>${esc(nameFn(r.key))}</td><td class="n">${fmtN(r.calls)}</td><td class="n">${fmtTok(r.input)}</td><td class="n">${fmtTok(r.output)}</td><td class="n">${fmtTok(r.cacheRead)}</td><td class="n">${fmtUsd(r.cost)}</td></tr>`).join('')}</table>`;
+  v.innerHTML = `<div class="page"><h1>Uso y tokens</h1><p class="lead">Últimos 30 días. El coste es una estimación con los precios de Ajustes.</p>
+    <div class="stats">
+      <div class="stat"><div class="k">Gasto del mes</div><div class="v">${fmtUsd(t.monthSpend)}</div>${t.limit ? `<div class="muted" style="font-size:12px">límite ${fmtUsd(t.limit)}</div>` : ''}</div>
+      <div class="stat"><div class="k">Tokens de entrada</div><div class="v">${fmtTok(t.input)}</div></div>
+      <div class="stat"><div class="k">Tokens de salida</div><div class="v">${fmtTok(t.output)}</div></div>
+      <div class="stat"><div class="k">Leídos de caché</div><div class="v">${fmtTok(t.cacheRead)}</div></div>
+      <div class="stat"><div class="k">Ahorro por caché</div><div class="v" style="color:var(--ok)">${fmtUsd(t.cacheSaved)}</div></div>
+    </div>
+    <section class="block"><h2>Tokens por día</h2><div class="bars">${u.byDay.map(d => `<div style="height:${(d.tokens / max * 100).toFixed(1)}%" title="${d.day}: ${fmtN(d.tokens)} tok · ${fmtUsd(d.cost)}"></div>`).join('') || '<span class="muted">Sin datos</span>'}</div></section>
+    <section class="block"><h2>Por agente</h2>${table(u.byAgent, 'Agente', k => (agentById(k)?.icon || '') + ' ' + (agentById(k)?.name || k))}</section>
+    <section class="block"><h2>Por modelo</h2>${table(u.byModel, 'Modelo')}</section>
+    <section class="block"><h2>Por proyecto</h2><table class="table">${Object.entries(u.byProject).map(([k, c]) => `<tr><td>${esc(pname(k))}</td><td class="n">${fmtUsd(c)}</td></tr>`).join('')}</table></section>
+    <section class="block"><h2>Cómo ahorra tokens faisp</h2><p>• La ficha del proyecto y las instrucciones de cada agente van primero y se cachean (se cobran ~10% en lecturas).<br>• Cada agente ve resúmenes de lo que hicieron los demás, no sus salidas completas.<br>• Los agentes leen archivos con herramientas bajo demanda en lugar de recibir el proyecto entero.<br>• Las skills solo se inyectan cuando la tarea las necesita.<br>• La pizarra se comprime en una memoria corta cuando crece.<br>• Las tareas sencillas van a modelos baratos (Haiku) y el código a Opus.</p></section></div>`;
+}
+
+// ---------- Ajustes (con pestañas, como los de Claude) ----------
+const SETTINGS_TABS = [
+  ['general', 'General', 'settings'], ['account', 'Cuenta', 'key'], ['usage', 'Uso', 'chart'],
+  ['models', 'Modelos', 'cube'], ['connectors', 'Conectores', 'plug'], ['budget', 'Presupuesto', 'zap'],
+];
+const pct = (a, b) => Math.max(0, Math.min(100, b ? a / b * 100 : 0));
+
+async function viewSettings(v) {
+  const tab = S.settingsTab || 'general';
+  v.innerHTML = `<div class="page settings"><h1>Ajustes</h1>
+    <div class="set-layout"><nav class="set-nav">${SETTINGS_TABS.map(([id, label, icon]) => `<button data-st="${id}" class="${id === tab ? 'on' : ''}">${ico(icon, 16)}<span>${label}</span></button>`).join('')}</nav>
+    <div class="set-body" id="setBody"><div class="muted">Cargando…</div></div></div></div>`;
+  $$('[data-st]').forEach(b => b.onclick = () => { S.settingsTab = b.dataset.st; viewSettings(v); });
+  const body = $('#setBody');
+  const cfg = structuredClone(S.st.config);
+  const save = async (msg = 'Guardado') => { await api('PUT', '/api/config', cfg); await loadState(); toast(msg); };
+  try { await ({ general: setGeneral, account: setAccount, usage: setUsage, models: setModels, connectors: setConnectors, budget: setBudget }[tab])(body, cfg, save); }
+  catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+function setGeneral(body, cfg, save) {
+  const p = cfg.profile || {};
+  body.innerHTML = `<section class="block"><h2>Perfil</h2><div class="form">
+      <div class="two"><label>Cómo te llamamos<input type="text" id="pn" value="${esc(p.name || '')}" placeholder="Tu nombre"></label>
+      <label>Idioma de respuesta<select class="in" id="pl">${[['es', 'Español'], ['en', 'English'], ['auto', 'El de mi mensaje']].map(([k, l]) => `<option value="${k}" ${p.language === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
+      <label>Instrucciones personales (las leen todos los agentes; se cachean)<textarea class="in" id="pi" rows="5" placeholder="Ej.: Respóndeme corto. Programo en Java/Fabric. No toques la UI del menú principal.">${esc(p.instructions || '')}</textarea></label></div></section>
+    <section class="block"><h2>Apariencia</h2><div class="row">${['light', 'dark', 'system'].map(t => `<button class="btn ${(document.documentElement.dataset.theme || 'system') === t ? 'primary' : ''}" data-theme="${t}">${{ light: 'Claro', dark: 'Oscuro', system: 'Sistema' }[t]}</button>`).join('')}</div></section>
+    <section class="block"><h2>Datos</h2><p>Todo se guarda en tu ordenador: <span class="mono">${esc(S.st.dataDir)}</span></p></section>
+    <button class="btn primary" id="sv">Guardar</button>`;
+  $$('[data-theme]', body).forEach(b => b.onclick = () => { const t = b.dataset.theme; if (t === 'system') { delete document.documentElement.dataset.theme; store.set('theme', ''); } else { document.documentElement.dataset.theme = t; store.set('theme', t); } setGeneral(body, cfg, save); });
+  $('#sv', body).onclick = async () => { cfg.profile = { name: $('#pn').value.trim(), language: $('#pl').value, instructions: $('#pi').value }; await save(); renderSidebar(); };
+}
+
+async function setAccount(body, cfg, save) {
+  body.innerHTML = '<div class="muted">Comprobando tu cuenta de Claude…</div>';
+  const acc = await api('GET', '/api/account');
+  const st = acc.status || {};
+  const logged = acc.found && st.loggedIn && !acc.expired;
+  const plan = st.subscriptionType || st.plan || (st.authMethod && st.authMethod !== 'none' ? st.authMethod : '');
+  body.innerHTML = `<section class="block"><h2>Cuenta de Claude</h2>
+      <p>Usa tu suscripción de Claude (Pro/Max) en lugar de la API: faisp le pasa el trabajo a tu propio Claude Code, que tiene tu sesión. faisp no ve ni guarda tus credenciales.</p>
+      <div class="card acct"><div class="row">
+        <div class="avatar big">${ico('key', 18)}</div>
+        <div style="flex:1;min-width:0">${!acc.found ? '<b>Claude Code no encontrado</b><div class="muted" style="font-size:13px">Instala Claude Code o la app de escritorio de Claude.</div>'
+          : `<b>${logged ? 'Sesión iniciada' : acc.expired ? 'Sesión caducada' : 'Sin sesión'}</b>${st.email ? ` <span class="muted">· ${esc(st.email)}</span>` : ''}
+             <div class="muted" style="font-size:13px">${esc(plan)}${st.loginExpiresAt ? ' · caduca ' + new Date(st.loginExpiresAt).toLocaleDateString('es-ES') : ''}</div>`}</div>
+        ${acc.found ? (logged ? '<button class="btn sm" id="lo">Cerrar sesión</button>' : '<button class="btn accent" id="li">Iniciar sesión con Claude</button>') : ''}
+      </div>${acc.found ? `<div class="mono muted" style="font-size:11.5px;margin-top:8px;overflow:hidden;text-overflow:ellipsis">${esc(acc.path)}</div>` : ''}</div>
+      <label class="check" style="margin-top:14px"><input type="checkbox" id="us" ${cfg.routing.useSubscription ? 'checked' : ''}> Usar primero mi suscripción para los modelos de Claude (si falla o se agota, sigue con la API y los respaldos)</label>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">Esta opción es para tu uso personal. Para distribuir faisp con inicio de sesión de claude.ai a otras personas, hace falta la aprobación de Anthropic.</p></section>
+    <section class="block"><h2>Licencia de faisp</h2><div class="form three">
+      <label>Plan<select class="in" id="lplan">${['self-hosted', 'free', 'pro', 'team', 'enterprise'].map(p => `<option ${cfg.license.plan === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+      <label>Clave<input type="text" id="lkey" value="${esc(cfg.license.key)}"></label><label>Email<input type="text" id="lmail" value="${esc(cfg.license.email)}"></label></div>
+      <button class="btn primary" id="sv" style="margin-top:12px">Guardar</button></section>`;
+  $('#li', body)?.addEventListener('click', async () => { await api('POST', '/api/account/login'); toast('Se abrió una ventana: sigue los pasos y vuelve aquí'); setTimeout(() => setAccount(body, cfg, save), 15000); });
+  $('#lo', body)?.addEventListener('click', async () => { if (!confirm('¿Cerrar la sesión de Claude Code en este PC?')) return; await api('POST', '/api/account/logout'); setAccount(body, cfg, save); });
+  $('#sv', body).onclick = async () => { cfg.routing.useSubscription = $('#us').checked; cfg.license = { plan: $('#lplan').value, key: $('#lkey').value, email: $('#lmail').value }; await save(); };
+  $('#us', body).onchange = async e => { cfg.routing.useSubscription = e.target.checked; await save(e.target.checked ? 'Se usará tu suscripción primero' : 'Suscripción desactivada'); };
+}
+
+async function setUsage(body) {
+  const [w, u] = await Promise.all([api('GET', '/api/usage/windows'), api('GET', '/api/usage')]);
+  const resets = w.sessionResetsAt ? new Date(w.sessionResetsAt) : null;
+  const bar = (label, sub, val, max, unit) => `<div class="ubar"><div class="row"><b>${label}</b><span class="muted" style="font-size:13px">${sub}</span><span style="flex:1"></span><span class="mono">${unit}</span></div><div class="track"><div style="width:${pct(val, max)}%"></div></div></div>`;
+  const maxTok = Math.max(w.week.subscription.tokens, w.week.api.tokens, 1);
+  body.innerHTML = `<section class="block"><h2>Límites de uso</h2><p>Consumo registrado por faisp. Los límites exactos de tu plan solo los muestra Claude; aquí ves cuánto lleva faisp en cada ventana.</p>
+      ${bar('Sesión actual', resets ? 'se reinicia ' + resets.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : 'ventana de 5 h', w.session.subscription.tokens, maxTok, fmtTok(w.session.subscription.tokens) + ' tok · ' + w.session.subscription.calls + ' llamadas')}
+      ${bar('Semana · suscripción de Claude', 'últimos 7 días', w.week.subscription.tokens, maxTok, fmtTok(w.week.subscription.tokens) + ' tok')}
+      ${bar('Semana · APIs', fmtUsd(w.week.api.cost), w.week.api.tokens, maxTok, fmtTok(w.week.api.tokens) + ' tok')}</section>
+    <section class="block"><h2>Este mes</h2><div class="stats">
+      <div class="stat"><div class="k">Gasto en APIs</div><div class="v">${fmtUsd(u.totals.monthSpend)}</div></div>
+      <div class="stat"><div class="k">Entrada</div><div class="v">${fmtTok(u.totals.input)}</div></div>
+      <div class="stat"><div class="k">Salida</div><div class="v">${fmtTok(u.totals.output)}</div></div>
+      <div class="stat"><div class="k">Ahorro por caché</div><div class="v" style="color:var(--ok)">${fmtUsd(u.totals.cacheSaved)}</div></div></div>
+      <button class="btn" id="more">${ico('chart', 14)} Ver el detalle por agente, modelo y proyecto</button></section>`;
+  $('#more', body).onclick = () => { S.view = 'usage'; renderSidebar(); render(); };
+}
+
+function setModels(body, cfg, save) {
+  const ready = S.st.providerReady;
+  const d = cfg.defaults || { model: 'anthropic:claude-opus-5-5', effort: 'medium', mode: 'auto' };
+  body.innerHTML = `<section class="block"><h2>Modelo por defecto</h2><p>Lo usan todos los agentes salvo que les pongas otro en Agentes. Por defecto: Claude Opus 5.5 con esfuerzo medio.</p>
+      <div class="form three"><label>Modelo<input type="text" id="dm" list="models" value="${esc(d.model)}"></label>
+      <label>Esfuerzo<select class="in" id="de">${EFFORT_LEVELS.map(([k, l]) => `<option value="${k}" ${d.effort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label>Modo de permisos inicial<select class="in" id="dmo">${MODES.map(m => `<option value="${m.id}" ${d.mode === m.id ? 'selected' : ''}>${m.label}</option>`).join('')}</select></label></div>
+      <datalist id="models">${MODEL_SUGGESTIONS.map(m => `<option value="${m}">`).join('')}</datalist>
+      <div class="row" style="margin-top:12px"><button class="btn primary" id="svd">Guardar</button><button class="btn" id="apply">Aplicar a todos los agentes</button></div></section>
+    <section class="block"><h2>Enrutado y ahorro</h2><div class="form two">
+      <label>Planificador<select class="in" id="rplan"><option value="llm">Orquestador IA</option><option value="heuristic">Palabras clave (0 tokens)</option></select></label>
+      <label>Compresión de la pizarra<select class="in" id="rsum"><option value="heuristic">Heurística (0 tokens)</option><option value="llm">IA</option></select></label></div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="reco" ${cfg.routing.economy ? 'checked' : ''}> ${ico('zap', 14)} Modo ahorro: probar primero los modelos gratuitos o locales</label></section>
+    <section class="block"><h2>Proveedores</h2><p>Cualquier API compatible con OpenAI se añade con su URL base.</p><div id="provs" class="form"></div>
+      <div class="row" style="margin-top:10px"><button class="btn" id="addProv">${ico('plus', 14)} Añadir proveedor</button><button class="btn primary" id="svp">Guardar proveedores</button></div></section>`;
+  $('#rplan', body).value = cfg.routing.planner; $('#rsum', body).value = cfg.routing.summarizer;
+  const readDefaults = () => { cfg.defaults = { model: $('#dm').value.trim(), effort: $('#de').value, mode: $('#dmo').value }; cfg.routing.planner = $('#rplan').value; cfg.routing.summarizer = $('#rsum').value; cfg.routing.economy = $('#reco').checked; };
+  $('#svd', body).onclick = async () => { readDefaults(); await save(); };
+  $('#apply', body).onclick = async () => {
+    readDefaults();
+    if (!confirm(`¿Poner ${cfg.defaults.model} con esfuerzo ${cfg.defaults.effort} en todos los agentes? Sus modelos de respaldo se mantienen.`)) return;
+    cfg.agents = cfg.agents.map(a => a.plugin ? a : { ...a, model: cfg.defaults.model, effort: cfg.defaults.effort });
+    await save('Aplicado a todos los agentes');
+  };
+  const drawProvs = () => {
+    $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px"><span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b><span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span><button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button><button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button></div>
+      ${p.note ? `<div class="muted" style="font-size:12.5px;margin-bottom:8px">${esc(p.note)}</div>` : ''}<div class="models-out" data-mo="${esc(id)}"></div>
+      <div class="form three"><label>Tipo<select class="in" data-pf="${esc(id)}.type">${[['anthropic', 'anthropic'], ['openai', 'openai (compatible)'], ['claude-code', 'Claude Code (suscripción)'], ['mock', 'demo']].map(([k, l]) => `<option value="${k}" ${p.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label>${p.type === 'claude-code' ? 'Ruta de claude.exe (vacío = automática)' : 'URL base'}<input type="text" data-pf="${esc(id)}.baseUrl" value="${esc(p.baseUrl)}"></label>
+      ${p.type === 'claude-code' ? '<label>Sesión<input type="text" disabled value="En Ajustes → Cuenta"></label>' : `<label>API key ${p.noKeyNeeded ? '(no necesaria)' : ''}<input type="password" data-pf="${esc(id)}.apiKey" value="${esc(p.apiKey)}" placeholder="${p.noKeyNeeded ? 'local' : 'pega tu clave'}" autocomplete="off"></label>`}</div></div>`).join('');
+    $$('[data-rmp]').forEach(b => b.onclick = () => { if (confirm('¿Quitar proveedor?')) { delete cfg.providers[b.dataset.rmp]; drawProvs(); } });
+    $$('[data-pf]').forEach(inp => inp.onchange = () => { const [id, f] = inp.dataset.pf.split('.'); cfg.providers[id][f] = inp.value; });
+    $$('[data-models]').forEach(b => b.onclick = async () => {
+      const id = b.dataset.models, out = $(`[data-mo="${CSS.escape(id)}"]`);
+      out.innerHTML = '<div class="muted" style="font-size:12.5px">Consultando… (guarda antes si acabas de pegar la clave)</div>';
+      try {
+        const { models } = await api('GET', `/api/providers/${encodeURIComponent(id)}/models`);
+        out.innerHTML = `<div class="model-list">${models.slice(0, 300).map(m => `<button class="chip" data-copy="${esc(id + ':' + m)}">${m.endsWith(':free') ? ico('zap', 11) + ' ' : ''}${esc(m)}</button>`).join('') || '<span class="muted">Sin modelos</span>'}</div>`;
+        $$('[data-copy]', out).forEach(c => c.onclick = async () => { await navigator.clipboard.writeText(c.dataset.copy); toast('Copiado ' + c.dataset.copy); });
+      } catch (e) { out.innerHTML = `<div class="err" style="font-size:12.5px">${esc(e.message.slice(0, 200))}</div>`; }
+    });
+  };
+  drawProvs();
+  $('#addProv', body).onclick = () => {
+    const id = (prompt('ID corto del proveedor (ej. deepseek, azure):') || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    if (!id) return;
+    cfg.providers[id] = { label: id, type: 'openai', baseUrl: 'https://', apiKey: '', noKeyNeeded: false, headers: {}, free: false, responsesApi: false, note: '' }; drawProvs();
+  };
+  $('#svp', body).onclick = async () => { readDefaults(); await save('Proveedores guardados'); };
+}
+
+async function setConnectors(body, cfg, save) {
+  const m = await api('GET', '/api/mcp');
+  body.innerHTML = `<section class="block"><h2>Servidores MCP</h2><p>Herramientas externas que pueden usar los agentes: el mismo estándar que Claude Code, Cursor o Gemini CLI. Las de solo lectura se usan sin preguntar; el resto sigue el modo de permisos.</p>
+      ${m.servers.length ? m.servers.map(s => `<div class="card" style="padding:12px 14px;margin-bottom:8px"><div class="row"><span class="dot ${s.running ? 'on' : ''}" title="${s.running ? 'En marcha' : 'Parado'}"></span><b>${esc(s.label || s.name)}</b><span class="mono muted">${esc(s.name)}</span>${s.running ? `<span class="chip">${s.tools} herramientas</span>` : ''}<span style="flex:1"></span>
+        <label class="check"><input type="checkbox" data-en="${esc(s.name)}" ${s.enabled ? 'checked' : ''}> activo</label><button class="btn sm" data-test="${esc(s.name)}">Probar</button><button class="btn sm danger" data-rm="${esc(s.name)}">Quitar</button></div>
+        ${s.description ? `<div class="muted" style="font-size:13px;margin-top:6px">${esc(s.description)}</div>` : ''}<div class="mono muted" style="font-size:11.5px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.command)}</div><div data-out="${esc(s.name)}"></div></div>`).join('') : '<div class="empty" style="padding:24px">Sin servidores MCP.</div>'}
+      <div class="row" style="margin-top:10px">${m.modpackDetected ? `<button class="btn primary" id="det">${ico('refresh', 14)} Detectar Modpack Launcher</button>` : ''}<button class="btn" id="imp">${ico('download', 14)} Importar .mcp.json…</button></div></section>
+    <section class="block"><h2>Carpetas de skills</h2><p>Skills en formato Claude (<span class="mono">carpeta/skill/SKILL.md</span>), por ejemplo las del Modpack Launcher.</p>
+      ${(cfg.skillDirs || []).map((d, i) => `<div class="row" style="margin-bottom:6px"><span class="chip">${esc(d.label || 'skills')}</span><span class="mono muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.path)}</span><span class="muted" style="font-size:12.5px">${esc((d.agents || []).join(', ') || 'todos')}</span><button class="btn sm danger" data-rsd="${i}">Quitar</button></div>`).join('') || '<div class="muted">Ninguna.</div>'}</section>`;
+  $$('[data-en]', body).forEach(c => c.onchange = async () => { cfg.mcpServers[c.dataset.en].enabled = c.checked; await save(); });
+  $$('[data-rm]', body).forEach(b => b.onclick = async () => { if (!confirm('¿Quitar este servidor MCP?')) return; delete cfg.mcpServers[b.dataset.rm]; await save(); setConnectors(body, cfg, save); });
+  $$('[data-rsd]', body).forEach(b => b.onclick = async () => { cfg.skillDirs.splice(+b.dataset.rsd, 1); await save(); setConnectors(body, cfg, save); });
+  $$('[data-test]', body).forEach(b => b.onclick = async () => {
+    const out = $(`[data-out="${CSS.escape(b.dataset.test)}"]`, body);
+    out.innerHTML = '<div class="muted" style="font-size:12.5px;margin-top:8px">Arrancando…</div>';
+    try {
+      const r = await api('POST', `/api/mcp/${encodeURIComponent(b.dataset.test)}/test`);
+      out.innerHTML = `<div class="model-list" style="margin-top:8px">${r.tools.map(t => `<span class="chip" title="${esc(t.description)}">${t.readOnly ? ico('eye', 11) : ico('pencil', 11)} ${esc(t.name)}</span>`).join('')}</div>`;
+    } catch (e) { out.innerHTML = `<div class="err" style="font-size:12.5px;margin-top:8px">${esc(e.message.slice(0, 300))}</div>`; }
+  });
+  $('#det', body)?.addEventListener('click', async () => { const r = await api('POST', '/api/integrations/detect'); await loadState(); toast(r.changed ? 'Modpack Launcher integrado' : 'Ya estaba integrado'); viewSettings($('#view')); });
+  $('#imp', body).onclick = async () => { const path = prompt('Ruta del archivo .mcp.json:'); if (!path) return; const r = await api('POST', '/api/mcp/import', { path }); await loadState(); toast(`${r.imported} servidor(es) importados`); viewSettings($('#view')); };
+}
+
+function setBudget(body, cfg, save) {
+  body.innerHTML = `<section class="block"><h2>Presupuesto de contexto</h2><div class="form three">
+      ${[['historyTurns', 'Turnos de historial'], ['blackboardItems', 'Eventos de pizarra visibles'], ['maxFileChars', 'Máx. caracteres por archivo'], ['maxFilesPerStep', 'Máx. archivos adjuntos/paso'], ['compressAt', 'Comprimir pizarra a partir de (tok)'], ['maxToolRounds', 'Máx. rondas de herramientas'], ['monthlyUsdLimit', 'Límite mensual USD (0 = sin límite)']].map(([k, l]) => `<label>${l}<input type="number" data-b="${k}" value="${cfg.budget[k]}"></label>`).join('')}</div></section>
+    <section class="block"><h2>Precios (USD por millón: entrada, salida, caché)</h2><textarea class="in code" id="pricing" rows="6">${esc(JSON.stringify(cfg.pricing, null, 2))}</textarea></section>
+    <button class="btn primary" id="sv">Guardar</button>`;
+  $('#sv', body).onclick = async () => {
+    try { $$('[data-b]', body).forEach(i => cfg.budget[i.dataset.b] = Number(i.value)); cfg.pricing = JSON.parse($('#pricing').value); await save(); }
+    catch (e) { toast('Error: ' + e.message); }
+  };
+}
+
+// ---------- Arranque ----------
+(async function init() {
+  $$('[data-i]').forEach(e => e.insertAdjacentHTML('afterbegin', ico(e.dataset.i, +e.dataset.s || 17)));
+  if (document.documentElement.classList.contains('pre-collapsed')) document.body.classList.add('collapsed');
+  syncOpenSide(); addEventListener('resize', syncOpenSide);
+  const ping = () => fetch('/api/ping', { method: 'POST' }).catch(() => {});
+  ping(); setInterval(ping, 25000);
+  try { await loadState(); await refreshArtifacts(); render(); }
+  catch (e) { $('#view').innerHTML = `<div class="page err">No se pudo conectar con el servidor local: ${esc(e.message)}</div>`; }
+})();
