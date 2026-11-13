@@ -15,6 +15,7 @@ mod orchestrator;
 mod providers;
 mod routines;
 mod store;
+mod window;
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -89,30 +90,27 @@ async fn already_running(port: u16) -> bool {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let a = args();
-    if let Some(d) = &a.data {
-        // SAFETY: se llama al arrancar, antes de crear hilos que lean el entorno.
-        unsafe { std::env::set_var("FAISP_DATA", d) };
-    }
-    let data = store::data_dir();
+async fn ask_existing_to_open(port: u16) -> bool {
+    let c = reqwest::Client::new();
+    c.post(format!("http://127.0.0.1:{port}/api/window/open")).timeout(Duration::from_secs(3)).send().await.map(|r| r.status().is_success()).unwrap_or(false)
+}
 
-    // Instancia única: si ya está abierta, solo abre otra ventana.
+/// Arranca el servidor en el runtime de tokio. Devuelve (url, estado) o None si ya había una instancia.
+async fn start_server(a: &Args, data: std::path::PathBuf) -> anyhow::Result<Option<(String, std::sync::Arc<orchestrator::AppState>)>> {
+    // Instancia única: si ya está abierta, le pide que abra otra ventana.
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", a.port)).await {
         Ok(l) => l,
         Err(_) if already_running(a.port).await => {
-            open_window(&format!("http://127.0.0.1:{}", a.port), &data);
-            return Ok(());
+            if !ask_existing_to_open(a.port).await {
+                open_window(&format!("http://127.0.0.1:{}", a.port), &data);
+            }
+            return Ok(None);
         }
         Err(_) => tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?,
     };
     let port = listener.local_addr()?.port();
     let url = format!("http://127.0.0.1:{port}");
-
     let st = orchestrator::AppState::load(data.clone());
-
-    // Guardado diferido
     {
         let st = st.clone();
         tokio::spawn(async move {
@@ -124,11 +122,42 @@ async fn main() -> anyhow::Result<()> {
         });
     }
     routines::spawn_scheduler(st.clone());
+    println!("faisp {} escuchando en {url}  (datos: {})", env!("CARGO_PKG_VERSION"), data.display());
+    let app = api::router(st.clone());
+    let shutdown_st = st.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                shutdown_st.dirty.store(true, Ordering::Relaxed);
+                shutdown_st.flush();
+                std::process::exit(0);
+            })
+            .await;
+    });
+    Ok(Some((url, st)))
+}
 
-    // Cierre automático: sin ventana abierta (sin pings) y sin rutinas activas → termina.
-    if !a.headless {
-        let st = st.clone();
-        tokio::spawn(async move {
+fn main() -> anyhow::Result<()> {
+    let a = args();
+    if let Some(d) = &a.data {
+        // SAFETY: al arrancar, antes de crear hilos.
+        unsafe { std::env::set_var("FAISP_DATA", d) };
+    }
+    let data = store::data_dir();
+    let rt = tokio::runtime::Runtime::new()?;
+    let Some((url, st)) = rt.block_on(start_server(&a, data.clone()))? else { return Ok(()) };
+
+    if a.headless {
+        rt.block_on(async { std::future::pending::<()>().await });
+        return Ok(());
+    }
+    // Ventana nativa (WebView2). Si no se puede, ventana de Edge en modo app como antes.
+    if let Err(e) = window::run(&url, &data, st.clone(), rt) {
+        eprintln!("Ventana nativa no disponible ({e}); se usa el navegador.");
+        open_window(&url, &data);
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async move {
             let mut t = tokio::time::interval(Duration::from_secs(30));
             loop {
                 t.tick().await;
@@ -140,18 +169,6 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         });
-        open_window(&url, &data);
     }
-    println!("faisp {} escuchando en {url}  (datos: {})", env!("CARGO_PKG_VERSION"), data.display());
-
-    let app = api::router(st.clone());
-    let shutdown_st = st.clone();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            shutdown_st.dirty.store(true, Ordering::Relaxed);
-            shutdown_st.flush();
-        })
-        .await?;
     Ok(())
 }

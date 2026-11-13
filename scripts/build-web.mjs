@@ -14,7 +14,7 @@ fs.mkdirSync(path.join(out, 'vendor'), { recursive: true });
 const copy = (from, to) => fs.copyFileSync(path.join(root, from), path.join(out, to));
 copy('web-src/index.html', 'index.html');
 copy('web-src/demo-api.js', 'demo-api.js');
-for (const f of ['app.js', 'app.css', 'icon.svg', 'icon-192.png', 'icon-256.png', 'icon-512.png', 'manifest.json', 'vendor/marked.js', 'vendor/purify.js']) copy('ui/' + f, f);
+for (const f of ['app.js', 'app.css', 'logos.js', 'icon.svg', 'icon-192.png', 'icon-256.png', 'icon-512.png', 'manifest.json', 'vendor/marked.js', 'vendor/purify.js']) copy('ui/' + f, f);
 // Documento de metadatos del cliente OAuth (CIMD) para los conectores remotos
 fs.mkdirSync(path.join(out, 'oauth'), { recursive: true });
 copy('web-src/client-metadata.json', 'oauth/client-metadata.json');

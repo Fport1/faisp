@@ -31,6 +31,7 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/", get(|| ui("index.html")))
         .route("/app.js", get(|| ui("app.js")))
         .route("/app.css", get(|| ui("app.css")))
+        .route("/logos.js", get(|| ui("logos.js")))
         .route("/icon.svg", get(|| ui("icon.svg")))
         .route("/manifest.json", get(|| ui("manifest.json")))
         .route("/icon-512.png", get(|| png(include_bytes!("../ui/icon-512.png"))))
@@ -88,6 +89,7 @@ async fn ui(name: &'static str) -> Response {
         "index.html" => include_str!("../ui/index.html"),
         "app.js" => include_str!("../ui/app.js"),
         "app.css" => include_str!("../ui/app.css"),
+        "logos.js" => include_str!("../ui/logos.js"),
         "icon.svg" => include_str!("../ui/icon.svg"),
         "manifest.json" => include_str!("../ui/manifest.json"),
         "vendor/marked.js" => include_str!("../ui/vendor/marked.js"),
@@ -732,6 +734,8 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/cli/codex/status", get(codex_status))
         .route("/api/claude/limits", get(claude_limits_get))
         .route("/api/limits", get(all_limits))
+        .route("/api/window/open", post(window_open))
+        .route("/api/providers/{id}/key", get(provider_key))
         .route("/api/claude/limits/refresh", post(claude_limits_refresh))
         .route("/api/cli/codex/login", post(codex_login))
         .route("/api/cli/codex/install", post(codex_install))
@@ -999,4 +1003,15 @@ async fn all_limits(State(st): St) -> ApiResult {
         }));
     }
     Ok(Json(json!({"claude": crate::providers::claude_limits(), "providers": providers})))
+}
+
+async fn window_open() -> ApiResult {
+    if crate::window::request_open() { Ok(Json(json!({"ok": true}))) } else { Err(bad("sin ventana nativa")) }
+}
+
+/// Devuelve la clave completa de un proveedor (solo accesible desde este PC: el servidor escucha en 127.0.0.1).
+async fn provider_key(State(st): St, Path(id): Path<String>) -> ApiResult {
+    let cfg = st.cfg.read().unwrap();
+    let p = cfg.providers.get(&id).ok_or_else(|| bad("Proveedor desconocido"))?;
+    Ok(Json(json!({"key": crate::providers::api_key(&id, p).unwrap_or_default()})))
 }

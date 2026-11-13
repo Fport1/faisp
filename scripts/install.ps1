@@ -28,6 +28,8 @@ Start-Sleep -Milliseconds 300
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Copy-Item -LiteralPath $exe -Destination (Join-Path $dest 'faisp.exe') -Force
 Copy-Item -LiteralPath (Join-Path $root 'assets\faisp.ico') -Destination (Join-Path $dest 'faisp.ico') -Force
+# Cargador de WebView2 (redistribuible de Microsoft) para la ventana nativa
+Copy-Item -LiteralPath (Join-Path $root 'assets\WebView2Loader.dll') -Destination (Join-Path $dest 'WebView2Loader.dll') -Force
 
 $shell = New-Object -ComObject WScript.Shell
 function New-Shortcut($path) {

@@ -59,6 +59,60 @@ const ICONS = {
   image: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="m21 16-5-5-9 9"/>',
   shield: '<path d="M12 3 4.5 6v6c0 4.5 3.2 7.8 7.5 9 4.3-1.2 7.5-4.5 7.5-9V6z"/>',
 };
+// ---------- Logos de proveedores y conectores ----------
+const PROVIDER_BRAND = { anthropic: 'anthropic', claude: 'claude', gemini: 'googlegemini', ollama: 'ollama', xai: 'x', openrouter: 'openrouter', mistral: 'mistralai', elevenlabs: 'elevenlabs', github: 'github', vercel: 'vercel', notion: 'notion', linear: 'linear', gdrive: 'googledrive', gmail: 'gmail', gcalendar: 'googlecalendar' };
+const DARK_BRANDS = ['000000', '181717', '191919'];
+function brandTile(id, label = '', size = 38) {
+  const b = typeof BRAND !== 'undefined' && BRAND[PROVIDER_BRAND[id] || id];
+  if (b) {
+    const fill = DARK_BRANDS.includes(b.hex) ? 'var(--text)' : '#' + b.hex;
+    return `<span class="tile brand" style="width:${size}px;height:${size}px" title="${esc(b.title)}"><svg viewBox="0 0 24 24" width="${Math.round(size * 0.55)}" height="${Math.round(size * 0.55)}" fill="${fill}" aria-hidden="true"><path d="${b.d}"/></svg></span>`;
+  }
+  const letter = (label || id).replace(/[^A-Za-z0-9]/g, '').slice(0, 2) || '?';
+  return `<span class="tile brand letter" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.36)}px">${esc(letter)}</span>`;
+}
+
+// ---------- Catálogo de modelos (desplegable) ----------
+const MODEL_CATALOG = {
+  anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2'],
+  claude: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2'],
+  gemini: ['gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-3.5-flash-lite'],
+  groq: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile'],
+  xai: ['grok-4.7', 'grok-4.3'],
+  cerebras: ['gpt-oss-120b', 'qwen-3.8-27b'],
+  chatgpt: [''],
+};
+const prettyModel = m => {
+  const c = m.match(/^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/);
+  if (c) return 'Claude ' + c[1][0].toUpperCase() + c[1].slice(1) + ' ' + c[2] + '.' + c[3];
+  if (m === '') return 'Modelo por defecto';
+  return m.replace(/^gemini-/, 'Gemini ').replace(/^grok-/, 'Grok ');
+};
+function modelPickerHtml(id, value, extraClass = '') {
+  const provs = S.st.config.providers || {};
+  const ready = S.st.providerReady || {};
+  let found = false;
+  const groups = Object.entries(provs).filter(([pid, p]) => p.type !== 'elevenlabs' && p.type !== 'mock').map(([pid, p]) => {
+    const models = MODEL_CATALOG[pid] || [];
+    const opts = models.map(m => { const v = pid + ':' + m; if (v === value) found = true; return `<option value="${esc(v)}" ${v === value ? 'selected' : ''}>${esc(prettyModel(m))}</option>`; }).join('');
+    return opts ? `<optgroup label="${esc(p.label)}${ready[pid] ? '' : ' (sin configurar)'}">${opts}</optgroup>` : '';
+  }).join('');
+  const current = !found && value ? `<optgroup label="Actual"><option value="${esc(value)}" selected>${esc(value)}</option></optgroup>` : '';
+  return `<select class="in model-pick ${extraClass}" id="${id}">${current}${groups}<option value="__custom">Otro modelo (escribir proveedor:modelo)…</option></select>`;
+}
+function wireModelPicker(sel) {
+  if (!sel) return;
+  let prev = sel.value;
+  sel.addEventListener('change', () => {
+    if (sel.value !== '__custom') { prev = sel.value; return; }
+    const v = (prompt('Modelo como proveedor:modelo (p. ej. openrouter:deepseek/deepseek-chat, ollama:qwen2.5-coder):', prev) || '').trim();
+    if (!v) { sel.value = prev; return; }
+    sel.insertAdjacentHTML('afterbegin', `<option value="${esc(v)}">${esc(v)}</option>`);
+    sel.value = v; prev = v;
+  });
+}
+const KEY_URLS = { anthropic: 'https://console.anthropic.com/settings/keys', gemini: 'https://aistudio.google.com/apikey', groq: 'https://console.groq.com/keys', xai: 'https://console.x.ai', openrouter: 'https://openrouter.ai/keys', cerebras: 'https://cloud.cerebras.ai', mistral: 'https://console.mistral.ai/api-keys', openai: 'https://platform.openai.com/api-keys', elevenlabs: 'https://elevenlabs.io/app/settings/api-keys' };
+
 const MODES = [
   { id: 'auto', label: 'Auto', icon: 'sparkle', desc: 'Lee libremente; las ediciones quedan como propuestas y los comandos piden permiso' },
   { id: 'manual', label: 'Manual', icon: 'shield', desc: 'Pide permiso antes de cada cambio' },
@@ -660,7 +714,7 @@ function editAgent(id) {
     ${fromPlugin ? '<div class="muted">Este agente viene de un plugin; edítalo en su plugin.json.</div>' : ''}
     <div class="three"><label>ID<input type="text" id="ai" value="${esc(a.id)}" ${id ? 'disabled' : ''}></label><label>Nombre<input type="text" id="an" value="${esc(a.name)}"></label><label>Color<input type="text" id="aco" value="${esc(a.color)}"></label></div>
     <label>Icono<div class="icon-grid" id="aic">${AGENT_ICONS.map(n => `<button type="button" data-ic="${n}" class="${n === a.icon ? 'on' : ''}" title="${n}">${ico(n, 18)}</button>`).join('')}</div></label>
-    <div class="three"><label>Modelo (proveedor:modelo)<input type="text" id="am" list="models" value="${esc(a.model)}"></label>
+    <div class="three"><label>Modelo${modelPickerHtml('am', a.model)}</label>
       <label>Esfuerzo<select class="in" id="ae">${['', 'low', 'medium', 'high', 'xhigh', 'max'].map(x => `<option ${x === a.effort ? 'selected' : ''} value="${x}">${x || '(por defecto)'}</option>`).join('')}</select></label>
       <label>Búsqueda web<select class="in" id="aw"><option value="0">No</option><option value="1" ${a.webSearch ? 'selected' : ''}>Sí (Claude / Grok)</option></select></label></div>
     <label>Modelos de respaldo, en orden (uno por línea). Se usan si el principal no tiene clave, se satura o falla.<textarea class="in code" id="af" rows="3">${esc((a.fallbacks || []).join('\n'))}</textarea></label>
@@ -683,6 +737,7 @@ function editAgent(id) {
         await api('PUT', '/api/agents', list); await loadState(); render();
       } },
     ]);
+  wireModelPicker($('#am'));
   $$('#aic button').forEach(b => b.onclick = () => { $$('#aic button').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
 }
 
@@ -926,7 +981,7 @@ function providerUsageCard(id, p) {
     rows.push(`<div class="ubar sm"><div class="row"><span>Caracteres del plan${a.tier ? ' · ' + esc(a.tier) : ''}</span><span class="muted" style="font-size:12px">${a.resetsAt ? fmtReset(a.resetsAt) : ''}</span><span style="flex:1"></span><span class="mono">${fmtN(a.used)} / ${fmtN(a.limit)}</span></div><div class="track"><div style="width:${pct(+a.used, +a.limit)}%"></div></div></div>`);
   }
   if (!rows.length) rows.push(`<div class="muted" style="font-size:12.5px">${p.kind === 'codex-cli' ? 'Codex CLI no informa de los límites de tu plan de ChatGPT.' : p.kind === 'openai' && ['gemini'].includes(id) ? 'Gemini no devuelve sus límites en las respuestas; consúltalos en AI Studio.' : 'Aún no hay datos de límites: aparecerán al usarlo o con «Comprobar».'}</div>`);
-  return `<div class="card pu"><div class="row" style="margin-bottom:8px"><span class="dot ${p.ready ? 'on' : ''}"></span><b>${esc(p.label)}</b>${p.free ? `<span class="chip eco">${ico('zap', 11)} gratis</span>` : ''}<span style="flex:1"></span>
+  return `<div class="card pu"><div class="row" style="margin-bottom:8px">${brandTile(id, p.label, 26)}<span class="dot ${p.ready ? 'on' : ''}"></span><b>${esc(p.label)}</b>${p.free ? `<span class="chip eco">${ico('zap', 11)} gratis</span>` : ''}<span style="flex:1"></span>
       <span class="muted" style="font-size:12.5px">7 días: ${fmtTok(p.week.tokens)} tok${p.week.cost ? ' · ' + fmtUsd(p.week.cost) : ''} · ${p.week.calls} llamadas</span>${p.ready && p.kind !== 'elevenlabs' ? `<button class="btn sm" data-check="${esc(id)}">Comprobar</button>` : ''}</div>${rows.join('')}</div>`;
 }
 
@@ -939,7 +994,7 @@ function setModels(body, cfg, save) {
   const ready = S.st.providerReady;
   const d = cfg.defaults || { model: 'anthropic:claude-opus-5-5', effort: 'medium', mode: 'auto' };
   body.innerHTML = `<section class="block"><h2>Modelo por defecto</h2><p>Lo usan todos los agentes salvo que les pongas otro en Agentes. Por defecto: Claude Opus 5.5 con esfuerzo medio.</p>
-      <div class="form three"><label>Modelo<input type="text" id="dm" list="models" value="${esc(d.model)}"></label>
+      <div class="form three"><label>Modelo${modelPickerHtml('dm', d.model)}</label>
       <label>Esfuerzo<select class="in" id="de">${EFFORT_LEVELS.map(([k, l]) => `<option value="${k}" ${d.effort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>Modo de permisos inicial<select class="in" id="dmo">${MODES.map(m => `<option value="${m.id}" ${d.mode === m.id ? 'selected' : ''}>${m.label}</option>`).join('')}</select></label></div>
       <datalist id="models">${MODEL_SUGGESTIONS.map(m => `<option value="${m}">`).join('')}</datalist>
@@ -951,6 +1006,7 @@ function setModels(body, cfg, save) {
     <section class="block"><h2>Proveedores</h2><p>Cualquier API compatible con OpenAI se añade con su URL base.</p><div id="provs" class="form"></div>
       <div class="row" style="margin-top:10px"><button class="btn" id="addProv">${ico('plus', 14)} Añadir proveedor</button><button class="btn" id="testAll">${ico('play', 13)} Probar todos los configurados</button><button class="btn primary" id="svp">Guardar proveedores</button></div></section>`;
   $('#rplan', body).value = cfg.routing.planner; $('#rsum', body).value = cfg.routing.summarizer;
+  wireModelPicker($('#dm', body));
   const readDefaults = () => { cfg.defaults = { model: $('#dm').value.trim(), effort: $('#de').value, mode: $('#dmo').value }; cfg.routing.planner = $('#rplan').value; cfg.routing.summarizer = $('#rsum').value; cfg.routing.economy = $('#reco').checked; };
   $('#svd', body).onclick = async () => { readDefaults(); await save(); };
   $('#apply', body).onclick = async () => {
@@ -960,14 +1016,22 @@ function setModels(body, cfg, save) {
     await save('Aplicado a todos los agentes');
   };
   const drawProvs = () => {
-    $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px"><span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b><span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span>${p.type !== 'elevenlabs' ? `<button class="btn sm" data-ptest="${esc(id)}">${ico('play', 12)} Probar</button>` : ''}<button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button><button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button></div>
+    $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px">${brandTile(id, p.label, 30)}<span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b>${KEY_URLS[id] && !p.apiKey ? `<a class="keylink" href="${KEY_URLS[id]}" target="_blank" rel="noopener">${ico('key', 12)} Obtener clave</a>` : ''}<span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span>${p.type !== 'elevenlabs' ? `<button class="btn sm" data-ptest="${esc(id)}">${ico('play', 12)} Probar</button>` : ''}<button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button><button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button></div>
       ${p.note ? `<div class="muted" style="font-size:12.5px;margin-bottom:8px">${esc(p.note)}</div>` : ''}<div class="models-out" data-mo="${esc(id)}"></div>
       <div class="form three"><label>Tipo<select class="in" data-pf="${esc(id)}.type">${[['anthropic', 'anthropic'], ['openai', 'openai (compatible)'], ['claude-code', 'Claude Code (suscripción)'], ['mock', 'demo']].map(([k, l]) => `<option value="${k}" ${p.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>${p.type === 'claude-code' ? 'Ruta de claude.exe (vacío = automática)' : 'URL base'}<input type="text" data-pf="${esc(id)}.baseUrl" value="${esc(p.baseUrl)}"></label>
-      ${p.type === 'claude-code' ? '<label>Sesión<input type="text" disabled value="En Ajustes → Cuenta"></label>' : `<label>API key ${p.noKeyNeeded ? '(no necesaria)' : ''}<input type="password" data-pf="${esc(id)}.apiKey" value="${esc(p.apiKey)}" placeholder="${p.noKeyNeeded ? 'local' : 'pega tu clave'}" autocomplete="off"></label>`}</div></div>`).join('');
+      ${p.type === 'claude-code' ? '<label>Sesión<input type="text" disabled value="En Ajustes → Cuenta"></label>' : `<label>API key ${p.noKeyNeeded ? '(no necesaria)' : ''}<div class="keybox"><input type="password" data-pf="${esc(id)}.apiKey" value="${esc(p.apiKey)}" placeholder="${p.noKeyNeeded ? 'local' : 'pega tu clave'}" autocomplete="off"><button type="button" class="icon-btn" data-eye="${esc(id)}" title="Ver u ocultar la clave">${ico('eye', 15)}</button></div></label>`}</div></div>`).join('');
     $$('[data-rmp]').forEach(b => b.onclick = () => { if (confirm('¿Quitar proveedor?')) { delete cfg.providers[b.dataset.rmp]; drawProvs(); } });
     $$('[data-pf]').forEach(inp => inp.onchange = () => { const [id, f] = inp.dataset.pf.split('.'); cfg.providers[id][f] = inp.value; });
     $$('[data-ptest]').forEach(b => b.onclick = () => testProvider(b.dataset.ptest));
+    $$('[data-eye]').forEach(b => b.onclick = async () => {
+      const inp = b.parentElement.querySelector('input');
+      if (inp.type === 'text') { inp.type = 'password'; return; }
+      if (inp.value.startsWith('••')) {
+        try { const r = await api('GET', `/api/providers/${encodeURIComponent(b.dataset.eye)}/key`); inp.value = r.key; cfg.providers[b.dataset.eye].apiKey = r.key; } catch (e) { toast(e.message); return; }
+      }
+      inp.type = 'text';
+    });
     $$('[data-models]').forEach(b => b.onclick = async () => {
       const id = b.dataset.models, out = $(`[data-mo="${CSS.escape(id)}"]`);
       out.innerHTML = '<div class="muted" style="font-size:12.5px">Consultando… (guarda antes si acabas de pegar la clave)</div>';
@@ -1014,7 +1078,7 @@ async function setConnectors(body, cfg, save) {
   const status = Object.fromEntries(m.servers.map(s => [s.name, s]));
   const elKey = cfg.providers.elevenlabs?.apiKey;
   const isOn = c => c.auth === 'apikey' ? !!elKey : !!servers[c.id] && (servers[c.id].oauth || servers[c.id].token || servers[c.id].tokenCommand || c.auth === 'none');
-  const tile = c => `<div class="tile" style="background:${c.color}">${esc(c.letter)}</div>`;
+  const tile = c => brandTile(c.id, c.name, 38);
   const extra = Object.entries(servers).filter(([k]) => !CATALOG.some(c => c.id === k));
   body.innerHTML = `<section class="block"><h2>Conectores</h2><p>Dale a tus agentes acceso a tus herramientas y datos. Usan el estándar MCP, igual que los conectores de Claude. Las acciones que cambian algo siguen el modo de permisos.</p>
       <div class="conn-grid">${CATALOG.map(c => { const on = isOn(c); return `<div class="conn ${on ? 'on' : ''}">${tile(c)}<div class="conn-txt"><b>${esc(c.name)}</b><span>${esc(c.desc)}</span></div>
