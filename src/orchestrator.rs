@@ -475,6 +475,13 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
                 };
             }
 
+            if name == "leer_google_doc" {
+                let url = input["url"].as_str().unwrap_or("").to_string();
+                return match crate::documents::google_export(&st.http, &url, &st.data.join("tmp")).await {
+                    Ok(t) => truncate(&t, 40000),
+                    Err(e) => format!("No se pudo leer: {e}"),
+                };
+            }
             if name == "analizar_medio_gemini" {
                 return gemini_media_tool(&st, project.as_ref(), &chat_id, &agent_id, &input).await;
             }
@@ -706,8 +713,17 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     let mut files: Vec<String> = step.files.iter().chain(step.attachments.iter()).cloned().collect();
     files.dedup();
     files.truncate(b.max_files_per_step);
-    if let Some(p) = &project {
-        for f in &files {
+    for f in &files {
+        let abs = std::path::Path::new(f);
+        if abs.is_absolute() {
+            // Archivo del PC elegido por el usuario (documentos; los multimedia los lee Gemini)
+            if st.picked.lock().unwrap().contains(f) && crate::gemini_media::mime_for(abs).map(|m| m == "application/pdf" || !m.starts_with("video") && !m.starts_with("audio") && !m.starts_with("image")).unwrap_or(true) {
+                let body = if crate::documents::is_document(abs) { crate::documents::extract(abs).unwrap_or_else(|e| format!("(no se pudo leer: {e})")) } else { std::fs::read_to_string(abs).unwrap_or_default() };
+                parts.push(format!("## Archivo adjunto: {f}\n```\n{}\n```", truncate(&body, b.max_file_chars * 2)));
+            }
+            continue;
+        }
+        if let Some(p) = &project {
             if let Some(body) = read_project_file(p, f, b.max_file_chars) {
                 parts.push(format!("## Archivo: {f}\n```\n{body}\n```"));
             }
@@ -720,6 +736,9 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     // Herramientas: archivos del proyecto + comandos + MCP
     let has_folder = project.as_ref().map(|p| !p.path.is_empty() && std::path::Path::new(&p.path).exists()).unwrap_or(false);
     let mut specs: Vec<Value> = Vec::new();
+    if agent.tools {
+        specs.push(crate::documents::google_tool_spec());
+    }
     if agent.tools && has_folder {
         specs.extend(tool_specs(true).into_iter().filter(|t| mode != "plan" || t["name"] != "write_file"));
         if mode != "plan" {
@@ -943,7 +962,7 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
 
     let planner = st.cfg.read().unwrap().routing.planner.clone();
     let agent_id = agent_id.or_else(|| {
-        let media = attachments.iter().any(|a| crate::gemini_media::mime_for(std::path::Path::new(a)).is_some());
+        let media = attachments.iter().any(|a| crate::gemini_media::mime_for(std::path::Path::new(a)).map(|m| m.starts_with("video") || m.starts_with("audio") || m.starts_with("image")).unwrap_or(false));
         (media && st.agent("multimedia").is_some()).then(|| "multimedia".to_string())
     });
     let (reply, mut steps, plan_usage) = if let Some(a) = &agent_id {

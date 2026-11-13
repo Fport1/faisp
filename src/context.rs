@@ -92,7 +92,7 @@ pub fn safe_path(project: &Project, rel: &str) -> anyhow::Result<PathBuf> {
 
 pub fn read_project_file(project: &Project, rel: &str, max_chars: usize) -> Option<String> {
     let p = safe_path(project, rel).ok()?;
-    let txt = std::fs::read_to_string(p).ok()?;
+    let txt = if crate::documents::is_document(&p) { crate::documents::extract(&p).ok()? } else { std::fs::read_to_string(p).ok()? };
     Some(truncate(&txt, max_chars))
 }
 
@@ -176,7 +176,7 @@ pub fn extract_artifacts(text: &str) -> Vec<FoundArtifact> {
 pub fn tool_specs(allow_write: bool) -> Vec<Value> {
     let mut v = vec![
         json!({"name":"list_dir","description":"Lista archivos y carpetas de una ruta del proyecto (relativa a la raíz). Usa \"\" para la raíz.","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}),
-        json!({"name":"read_file","description":"Lee un archivo de texto del proyecto. Para archivos largos usa start_line/max_lines.","input_schema":{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer"},"max_lines":{"type":"integer"}},"required":["path"],"additionalProperties":false}}),
+        json!({"name":"read_file","description":"Lee un archivo del proyecto: texto, código, PDF, Word (.docx), Excel/hojas (.xlsx, .xls, .ods, .csv), PowerPoint (.pptx) y OpenDocument. Para archivos largos usa start_line/max_lines.","input_schema":{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer"},"max_lines":{"type":"integer"}},"required":["path"],"additionalProperties":false}}),
         json!({"name":"search","description":"Busca texto (regex) en los archivos del proyecto. Devuelve ruta:línea: contenido. Opcional: filtrar por subcarpeta o extensión.","input_schema":{"type":"object","properties":{"pattern":{"type":"string"},"under":{"type":"string"},"ext":{"type":"string"}},"required":["pattern"],"additionalProperties":false}}),
     ];
     v.push(json!({"name":"write_file","description": if allow_write { "Escribe (crea o reemplaza) un archivo del proyecto con el contenido completo. Se guarda copia de seguridad del anterior." } else { "Propone un archivo completo para el proyecto. El usuario lo revisará y aplicará." },"input_schema":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}}));
@@ -209,7 +209,8 @@ pub fn tool_list_dir(project: &Project, rel: &str) -> String {
 
 pub fn tool_read_file(project: &Project, rel: &str, start: usize, max_lines: usize, max_chars: usize) -> String {
     let Ok(p) = safe_path(project, rel) else { return "Ruta no permitida".into() };
-    match std::fs::read_to_string(&p) {
+    let content = if crate::documents::is_document(&p) { crate::documents::extract(&p) } else { std::fs::read_to_string(&p).map_err(anyhow::Error::from) };
+    match content {
         Ok(t) => {
             let total = t.lines().count();
             let start = start.max(1);

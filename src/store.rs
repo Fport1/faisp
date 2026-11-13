@@ -180,10 +180,14 @@ pub struct Profile {
     pub language: String,
     /// Preferencias que se añaden a todos los agentes (como las "instrucciones personales" de Claude).
     pub instructions: String,
+    /// Corrector de ortografía y gramática en el chat (LanguageTool)
+    pub spellcheck: bool,
+    /// auto | es | en-US | en-GB
+    pub spell_lang: String,
 }
 impl Default for Profile {
     fn default() -> Self {
-        Self { name: String::new(), language: "es".into(), instructions: String::new() }
+        Self { name: String::new(), language: "es".into(), instructions: String::new(), spellcheck: true, spell_lang: "auto".into() }
     }
 }
 

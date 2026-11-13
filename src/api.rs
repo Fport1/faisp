@@ -741,6 +741,7 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/limits", get(all_limits))
         .route("/api/window/open", post(window_open))
         .route("/api/pick-file", post(pick_file))
+        .route("/api/grammar", post(grammar))
         .route("/api/providers/{id}/key", get(provider_key))
         .route("/api/claude/limits/refresh", post(claude_limits_refresh))
         .route("/api/cli/codex/login", post(codex_login))
@@ -1037,7 +1038,7 @@ fn friendly_error(e: &str, label: &str) -> String {
 async fn pick_file(State(st): St) -> ApiResult {
     #[cfg(windows)]
     {
-        let script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; $o=New-Object System.Windows.Forms.Form -Property @{TopMost=$true}; $f=New-Object System.Windows.Forms.OpenFileDialog; $f.Title='Adjuntar archivo'; $f.Filter='Vídeo, audio e imagen|*.mp4;*.mov;*.webm;*.mkv;*.avi;*.mp3;*.wav;*.ogg;*.flac;*.m4a;*.aac;*.png;*.jpg;*.jpeg;*.webp;*.gif;*.pdf|Todos|*.*'; if($f.ShowDialog($o) -eq 'OK'){ $f.FileName }";
+        let script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; $o=New-Object System.Windows.Forms.Form -Property @{TopMost=$true}; $f=New-Object System.Windows.Forms.OpenFileDialog; $f.Title='Adjuntar archivo'; $f.Filter='Documentos y multimedia|*.pdf;*.docx;*.xlsx;*.xls;*.ods;*.csv;*.pptx;*.odt;*.odp;*.txt;*.md;*.json;*.mp4;*.mov;*.webm;*.mkv;*.avi;*.mp3;*.wav;*.ogg;*.flac;*.m4a;*.aac;*.png;*.jpg;*.jpeg;*.webp;*.gif|Todos|*.*'; if($f.ShowDialog($o) -eq 'OK'){ $f.FileName }";
         let mut cmd = tokio::process::Command::new("powershell");
         cmd.args(["-NoProfile", "-STA", "-Command", script]);
         hidden(&mut cmd);
@@ -1061,4 +1062,35 @@ async fn provider_key(State(st): St, Path(id): Path<String>) -> ApiResult {
     let cfg = st.cfg.read().unwrap();
     let p = cfg.providers.get(&id).ok_or_else(|| bad("Proveedor desconocido"))?;
     Ok(Json(json!({"key": crate::providers::api_key(&id, p).unwrap_or_default()})))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct GrammarBody {
+    text: String,
+    language: String,
+}
+/// Revisión de ortografía y gramática con LanguageTool (servicio público, español e inglés).
+async fn grammar(State(st): St, Json(b): Json<GrammarBody>) -> ApiResult {
+    if b.text.trim().len() < 3 {
+        return Ok(Json(json!({"matches": []})));
+    }
+    let text: String = b.text.chars().take(18000).collect();
+    let lang = if b.language.is_empty() { "auto".to_string() } else { b.language.clone() };
+    let mut form = vec![("text", text), ("language", lang.clone())];
+    if lang == "auto" {
+        form.push(("preferredVariants", "es-ES,en-US".into()));
+    }
+    let r = st.http.post("https://api.languagetool.org/v2/check").timeout(std::time::Duration::from_secs(15)).form(&form).send().await.map_err(bad)?;
+    if !r.status().is_success() {
+        let s = r.status();
+        return Err(bad(if s.as_u16() == 429 { "Corrector: demasiadas revisiones seguidas; espera un momento".to_string() } else { format!("Corrector: HTTP {s}") }));
+    }
+    let v: Value = r.json().await.map_err(bad)?;
+    let matches: Vec<Value> = v["matches"].as_array().cloned().unwrap_or_default().iter().map(|m| json!({
+        "offset": m["offset"], "length": m["length"], "message": m["message"], "short": m["shortMessage"],
+        "replacements": m["replacements"].as_array().map(|a| a.iter().take(5).filter_map(|r| r["value"].as_str()).collect::<Vec<_>>()).unwrap_or_default(),
+        "type": m["rule"]["issueType"], "rule": m["rule"]["id"],
+    })).collect();
+    Ok(Json(json!({"matches": matches, "language": v["language"]["detectedLanguage"]["name"]})))
 }

@@ -295,7 +295,7 @@ function modal(title, bodyHtml, buttons = []) {
   $('[data-close]', o).onclick = close;
   for (const b of buttons) {
     const el = document.createElement('button'); el.className = 'btn ' + (b.cls || ''); el.textContent = b.label;
-    el.onclick = async () => { try { const keep = await b.run(o); if (keep !== true) close(); } catch (err) { toast(err.message); } };
+    el.onclick = async () => { try { const keep = b.run ? await b.run(o) : undefined; if (keep !== true) close(); } catch (err) { toast(err.message); } };
     $('footer', o).appendChild(el);
   }
   document.body.appendChild(o);
@@ -423,7 +423,7 @@ function composer() {
   wrap.className = 'composer';
   const ags = agents().filter(a => a.id !== 'orquestador');
   wrap.innerHTML = `<div class="att" id="attList"></div>
-    <textarea id="prompt" rows="1" placeholder="${S.chat?.messages?.length ? 'Responde…' : '¿En qué te ayudo hoy?'}"></textarea>
+    <div class="ta-wrap"><div class="ta-mirror" id="taMirror" aria-hidden="true"></div><textarea id="prompt" rows="1" spellcheck="false" placeholder="${S.chat?.messages?.length ? 'Responde…' : '¿En qué te ayudo hoy?'}"></textarea></div>
     <div class="composer-bar">
       <button class="icon-btn" id="attachBtn" title="Adjuntar archivos del proyecto">${ico('plus', 18)}</button>
       <button class="picker" id="agentPick" title="Quién responde"></button>
@@ -444,6 +444,7 @@ function composer() {
   const drawMode = () => { const m = MODES.find(x => x.id === curMode()) || MODES[0]; modePick.innerHTML = `${ico(m.icon, 14)}<span>${m.label}</span>`; modePick.classList.toggle('warn', m.id === 'bypass'); };
   const drawEff = () => { const e = EFFORTS.find(x => x[0] === S.effort) || EFFORTS[0]; effPick.innerHTML = `${ico('chart', 14)}<span>${S.effort === 'agent' ? 'Esfuerzo' : e[1]}</span>`; };
   drawMode(); drawEff();
+  modePick.addEventListener('redraw', drawMode); effPick.addEventListener('redraw', drawEff);
   const EFF_DESC = { agent: 'El configurado en cada agente (por defecto, medio)', low: 'Rápido y barato', medium: 'Equilibrado', high: 'Piensa más', xhigh: 'Para tareas difíciles', max: 'Sin límite de razonamiento' };
   modePick.onclick = () => menu(modePick, MODES.map(m => ({ label: `${ico(m.icon, 16)}<div><div>${m.label}${m.id === curMode() ? ' ' + ico('tick', 13) : ''}</div><div class="sub wrap">${m.desc}</div></div>`, run: () => { S.mode = m.id; store.set('mode', m.id); drawMode(); } })));
   effPick.onclick = () => menu(effPick, EFFORTS.map(([k, l]) => ({ label: `${ico('chart', 16)}<div><div>${l}${k === S.effort ? ' ' + ico('tick', 13) : ''}</div><div class="sub wrap">${EFF_DESC[k]}</div></div>`, run: () => { S.effort = k; store.set('effort', k); drawEff(); } })));
@@ -453,12 +454,13 @@ function composer() {
     ...ags.map(a => ({ label: `${agentIcon(a, 16)}<div><div>${esc(a.name)}</div><div class="sub">${esc(a.model)}</div></div>`, run: () => { S.agent = a.id; drawPick(); } })),
   ]);
   ta.addEventListener('input', () => { autosize(ta); sendBtn.disabled = !S.streaming && !ta.value.trim(); });
+  setupSpell(ta, $('#taMirror', wrap));
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!S.streaming) send(); } });
   sendBtn.disabled = !S.streaming;
   sendBtn.onclick = () => S.streaming ? stopStream() : send();
   $('#attachBtn', wrap).onclick = () => menu($('#attachBtn', wrap), [
     { label: ico('folder', 16) + '<div><div>Archivo del proyecto</div><div class="sub">Código, textos, modelos…</div></div>', run: attachDialog },
-    { label: ico('image', 16) + '<div><div>Vídeo, audio o imagen del PC</div><div class="sub">Lo analiza Gemini (agente Vídeo y audio)</div></div>', run: async () => {
+    { label: ico('file', 16) + '<div><div>Archivo del PC</div><div class="sub">PDF, Word, Excel, PowerPoint, vídeo, audio, imagen…</div></div>', run: async () => {
       const r = await api('POST', '/api/pick-file').catch(e => ({ error: e.message }));
       if (r.path) { S.attachments = [...new Set([...S.attachments, r.path])]; renderAttachments(); }
     } },
@@ -467,6 +469,49 @@ function composer() {
   return wrap;
 }
 function curMode() { return S.mode || S.st?.config?.defaults?.mode || 'auto'; }
+// ---------- Corrector (estilo Google Docs) ----------
+function setupSpell(ta, mirror) {
+  let matches = [], timer, seq = 0;
+  const ignored = () => { try { return JSON.parse(store.get('spellIgnore', '[]')); } catch { return []; } };
+  const on = () => S.st?.config?.profile?.spellcheck !== false;
+  const draw = () => {
+    const t = ta.value; let html = '', last = 0;
+    matches.forEach((m, i) => {
+      if (m.offset < last) return;
+      html += esc(t.slice(last, m.offset)) + `<mark class="${m.type === 'misspelling' ? 'gerr' : 'gstyle'}" data-i="${i}">${esc(t.slice(m.offset, m.offset + m.length))}</mark>`;
+      last = m.offset + m.length;
+    });
+    mirror.innerHTML = html + esc(t.slice(last)) + '\n';
+    mirror.scrollTop = ta.scrollTop;
+  };
+  const check = async () => {
+    const my = ++seq, text = ta.value;
+    if (!on() || text.trim().length < 4) { matches = []; draw(); return; }
+    try {
+      const r = await api('POST', '/api/grammar', { text, language: S.st.config.profile?.spellLang || 'auto' });
+      if (my !== seq || ta.value !== text) return;
+      const ig = ignored();
+      matches = r.matches.filter(m => !ig.includes(text.slice(m.offset, m.offset + m.length).toLowerCase()));
+      draw();
+    } catch { /* sin conexión o límite: no molestar */ }
+  };
+  ta.addEventListener('input', () => { matches = []; draw(); clearTimeout(timer); timer = setTimeout(check, 900); });
+  ta.addEventListener('scroll', () => { mirror.scrollTop = ta.scrollTop; });
+  const suggest = () => {
+    const p = ta.selectionStart; const i = matches.findIndex(m => p >= m.offset && p <= m.offset + m.length);
+    if (i < 0 || ta.selectionEnd !== p) return;
+    const m = matches[i]; const mark = mirror.querySelector(`[data-i="${i}"]`); if (!mark) return;
+    const word = ta.value.slice(m.offset, m.offset + m.length);
+    const apply = v => { ta.value = ta.value.slice(0, m.offset) + v + ta.value.slice(m.offset + m.length); ta.focus(); ta.selectionStart = ta.selectionEnd = m.offset + v.length; ta.dispatchEvent(new Event('input')); };
+    const items = [{ label: `<div class="sub wrap" style="max-width:320px">${esc(m.message)}</div>`, run: () => {} }, '-'];
+    m.replacements.forEach(r => items.push({ label: `<b>${esc(r)}</b>`, run: () => apply(r) }));
+    if (m.type === 'misspelling') items.push('-', { label: ico('x', 14) + ' Ignorar «' + esc(word) + '»', run: () => { const ig = ignored(); ig.push(word.toLowerCase()); store.set('spellIgnore', JSON.stringify(ig)); matches.splice(i, 1); draw(); } });
+    menu(mark, items);
+  };
+  ta.addEventListener('click', suggest);
+  ta.addEventListener('keydown', e => { if (e.ctrlKey && e.key === ' ') { e.preventDefault(); suggest(); } });
+}
+
 function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 280) + 'px'; }
 function renderAttachments(root = document) {
   const el = $('#attList', root); if (!el) return;
@@ -864,9 +909,114 @@ async function viewUsage(v) {
 }
 
 // ---------- Ajustes (con pestañas, como los de Claude) ----------
+
+// ---------- Atajos de teclado (estilo Claude / Claude Code), editables en Ajustes → Atajos ----------
+const SHORTCUTS = [
+  { id: 'palette', label: 'Buscar chats y acciones', def: 'Ctrl+K', run: () => openPalette() },
+  { id: 'newChat', label: 'Nuevo chat', def: 'Ctrl+Shift+O', run: () => $('#newChat').click() },
+  { id: 'sidebar', label: 'Mostrar u ocultar la barra lateral', def: 'Ctrl+B', run: () => window.toggleSide?.() },
+  { id: 'panel', label: 'Mostrar u ocultar la pizarra', def: 'Ctrl+.', run: () => $('#panelBtn').click() },
+  { id: 'focus', label: 'Escribir en el chat', def: 'Shift+Esc', run: () => { if (S.view !== 'chat') { S.view = 'chat'; renderSidebar(); render(); } setTimeout(() => $('#prompt')?.focus(), 0); } },
+  { id: 'cycleMode', label: 'Cambiar modo de permisos (en el chat)', def: 'Shift+Tab', input: true, run: () => cycleMode() },
+  { id: 'cycleEffort', label: 'Cambiar nivel de esfuerzo', def: 'Ctrl+Shift+E', run: () => cycleEffort() },
+  { id: 'stop', label: 'Detener la respuesta', def: 'Esc', input: true, run: () => { if (S.streaming) { stopStream(); return true; } return false; } },
+  { id: 'copyLast', label: 'Copiar la última respuesta', def: 'Ctrl+Shift+C', run: () => copyLast() },
+  { id: 'prevChat', label: 'Chat anterior', def: 'Ctrl+Alt+ArrowUp', run: () => moveChat(-1) },
+  { id: 'nextChat', label: 'Chat siguiente', def: 'Ctrl+Alt+ArrowDown', run: () => moveChat(1) },
+  { id: 'settings', label: 'Ajustes', def: 'Ctrl+,', run: () => { S.view = 'settings'; renderSidebar(); render(); } },
+  { id: 'usage', label: 'Uso y límites', def: 'Ctrl+Shift+U', run: () => { S.view = 'settings'; S.settingsTab = 'usage'; renderSidebar(); render(); } },
+  { id: 'help', label: 'Mapa de atajos', def: 'Ctrl+/', run: () => { S.view = 'settings'; S.settingsTab = 'keys'; renderSidebar(); render(); } },
+];
+const keyBindings = () => { let o = {}; try { o = JSON.parse(store.get('shortcuts', '{}')); } catch {} return Object.fromEntries(SHORTCUTS.map(s => [s.id, o[s.id] || s.def])); };
+function comboOf(e) {
+  const k = { ' ': 'Space', Escape: 'Esc' }[e.key] || (e.key.length === 1 ? e.key.toUpperCase() : e.key);
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return '';
+  return [e.ctrlKey || e.metaKey ? 'Ctrl' : '', e.altKey ? 'Alt' : '', e.shiftKey && !(e.key.length === 1 && /[^a-zA-Z0-9]/.test(e.key)) ? 'Shift' : '', k].filter(Boolean).join('+');
+}
+const kbd = c => c.split('+').map(p => `<kbd>${esc({ ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→' }[p] || p)}</kbd>`).join('<span class="plus">+</span>');
+addEventListener('keydown', e => {
+  if (S.recordingKey) return;
+  const combo = comboOf(e); if (!combo) return;
+  const binds = keyBindings();
+  const inField = e.target.closest?.('input, textarea, select, [contenteditable="true"]');
+  const sc = SHORTCUTS.find(s => binds[s.id] === combo);
+  if (!sc) return;
+  if (inField && !combo.startsWith('Ctrl') && !sc.input) return;
+  if (sc.id === 'cycleMode' && e.target.id !== 'prompt') return;
+  if (document.querySelector('.overlay') && sc.id !== 'stop') return;
+  const handled = sc.run();
+  if (handled !== false) e.preventDefault();
+}, true);
+function cycleMode() { const i = MODES.findIndex(m => m.id === curMode()); S.mode = MODES[(i + 1) % MODES.length].id; store.set('mode', S.mode); $('#modePick') && $('#modePick').dispatchEvent(new CustomEvent('redraw')); toast('Modo: ' + MODES.find(m => m.id === S.mode).label); }
+function cycleEffort() { const i = EFFORTS.findIndex(x => x[0] === S.effort); S.effort = EFFORTS[(i + 1) % EFFORTS.length][0]; store.set('effort', S.effort); $('#effPick') && $('#effPick').dispatchEvent(new CustomEvent('redraw')); toast('Esfuerzo: ' + EFFORTS.find(x => x[0] === S.effort)[1]); }
+async function copyLast() { const m = [...(S.chat?.messages || [])].reverse().find(x => x.role === 'assistant'); if (!m) return toast('No hay respuesta que copiar'); const t = m.steps?.length ? m.steps.map(s => s.text).join('\n\n') : m.content; await navigator.clipboard.writeText(t); toast('Respuesta copiada'); }
+function moveChat(d) { const list = S.st.chats.filter(c => c.projectId === S.projectId); if (!list.length) return; const i = list.findIndex(c => c.id === S.chatId); const n = list[Math.max(0, Math.min(list.length - 1, i < 0 ? 0 : i + d))]; if (n) openChat(n.id); }
+
+// Paleta de búsqueda (Ctrl+K)
+function openPalette() {
+  if (document.querySelector('.palette')) return;
+  const actions = [
+    { t: 'Nuevo chat', i: 'plus', run: () => $('#newChat').click() },
+    ...['projects:Proyectos:folder', 'artifacts:Artefactos:layers', 'agents:Agentes:bot', 'extensions:Extensiones:plug', 'routines:Rutinas:clock', 'usage:Uso y tokens:chart'].map(x => { const [v, t, i] = x.split(':'); return { t, i, run: () => { S.view = v; renderSidebar(); render(); } }; }),
+    ...SETTINGS_TABS.map(([id, label, icon]) => ({ t: 'Ajustes · ' + label, i: icon, run: () => { S.view = 'settings'; S.settingsTab = id; renderSidebar(); render(); } })),
+    ...MODES.map(m => ({ t: 'Modo: ' + m.label, i: m.icon, run: () => { S.mode = m.id; store.set('mode', m.id); render(); } })),
+  ];
+  const chats = S.st.chats.map(c => ({ t: c.title || 'Nuevo chat', sub: (S.st.projects.find(p => p.id === c.projectId)?.name || '') + ' · ' + ago(c.updatedAt), i: 'chat', run: () => openChat(c.id) }));
+  const projects = S.st.projects.map(p => ({ t: p.name, sub: 'Proyecto', i: 'folder', run: () => { setProject(p.id); S.view = 'chat'; render(); } }));
+  const o = document.createElement('div'); o.className = 'overlay palette';
+  o.innerHTML = `<div class="pal"><div class="pal-in">${ico('search', 17)}<input id="palQ" placeholder="Buscar chats, proyectos y acciones…" autocomplete="off"><kbd>Esc</kbd></div><div class="pal-list" id="palL"></div></div>`;
+  document.body.appendChild(o);
+  let sel = 0, items = [];
+  const draw = () => {
+    const q = $('#palQ', o).value.trim().toLowerCase();
+    const all = q ? [...chats, ...projects, ...actions].filter(x => (x.t + ' ' + (x.sub || '')).toLowerCase().includes(q)) : [...actions.slice(0, 8), ...chats.slice(0, 8)];
+    items = all.slice(0, 40); sel = Math.min(sel, Math.max(0, items.length - 1));
+    $('#palL', o).innerHTML = items.map((x, k) => `<button class="pal-it ${k === sel ? 'on' : ''}" data-k="${k}">${ico(x.i, 15)}<span>${esc(x.t)}</span>${x.sub ? `<span class="muted">${esc(x.sub)}</span>` : ''}</button>`).join('') || '<div class="muted" style="padding:14px">Sin resultados</div>';
+    $$('[data-k]', o).forEach(b => b.onclick = () => go(+b.dataset.k));
+  };
+  const close = () => o.remove();
+  const go = k => { const x = items[k]; close(); x?.run(); };
+  $('#palQ', o).addEventListener('input', () => { sel = 0; draw(); });
+  $('#palQ', o).addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { sel = Math.min(items.length - 1, sel + 1); draw(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { sel = Math.max(0, sel - 1); draw(); e.preventDefault(); }
+    else if (e.key === 'Enter') { go(sel); e.preventDefault(); }
+    else if (e.key === 'Escape') { close(); e.preventDefault(); }
+  });
+  o.addEventListener('mousedown', e => { if (e.target === o) close(); });
+  draw(); $('#palQ', o).focus();
+}
+
+// Ajustes → Atajos
+function setKeys(body) {
+  const binds = keyBindings();
+  body.innerHTML = `<section class="block"><h2>Atajos de teclado</h2><p>Inspirados en Claude y Claude Code. Pulsa «Cambiar» y después la nueva combinación.</p>
+    <table class="table keys">${SHORTCUTS.map(s => `<tr><td>${esc(s.label)}</td><td class="n">${kbd(binds[s.id])}</td><td class="n" style="width:1%;white-space:nowrap"><button class="btn sm" data-rec="${s.id}">Cambiar</button>${binds[s.id] !== s.def ? ` <button class="btn sm" data-rst="${s.id}" title="Volver a ${esc(s.def)}">${ico('refresh', 12)}</button>` : ''}</td></tr>`).join('')}
+    <tr><td>Enviar · nueva línea</td><td class="n">${kbd('Enter')} · ${kbd('Shift+Enter')}</td><td></td></tr></table>
+    <div style="margin-top:12px"><button class="btn" id="rstAll">Restablecer todos</button></div></section>`;
+  const saveB = o => store.set('shortcuts', JSON.stringify(o));
+  $$('[data-rec]', body).forEach(b => b.onclick = () => {
+    S.recordingKey = true; b.textContent = 'Pulsa la combinación…'; b.classList.add('primary');
+    const h = e => {
+      e.preventDefault(); e.stopPropagation();
+      if (e.key === 'Escape' && !e.shiftKey) { done(); return; }
+      const c = comboOf(e); if (!c) return;
+      const o = {}; try { Object.assign(o, JSON.parse(store.get('shortcuts', '{}'))); } catch {}
+      const clash = SHORTCUTS.find(s => s.id !== b.dataset.rec && keyBindings()[s.id] === c);
+      if (clash) toast(`«${c}» ya lo usa: ${clash.label}`);
+      else { o[b.dataset.rec] = c; saveB(o); }
+      done();
+    };
+    const done = () => { removeEventListener('keydown', h, true); S.recordingKey = false; setKeys(body); };
+    addEventListener('keydown', h, true);
+  });
+  $$('[data-rst]', body).forEach(b => b.onclick = () => { const o = JSON.parse(store.get('shortcuts', '{}') || '{}'); delete o[b.dataset.rst]; saveB(o); setKeys(body); });
+  $('#rstAll', body).onclick = () => { saveB({}); setKeys(body); toast('Atajos restablecidos'); };
+}
+
 const SETTINGS_TABS = [
   ['general', 'General', 'settings'], ['account', 'Cuenta', 'key'], ['usage', 'Uso', 'chart'],
-  ['models', 'Modelos', 'cube'], ['connectors', 'Conectores', 'plug'], ['budget', 'Presupuesto', 'zap'],
+  ['models', 'Modelos', 'cube'], ['connectors', 'Conectores', 'plug'], ['keys', 'Atajos', 'key'], ['budget', 'Presupuesto', 'zap'],
 ];
 const pct = (a, b) => Math.max(0, Math.min(100, b ? a / b * 100 : 0));
 
@@ -879,7 +1029,7 @@ async function viewSettings(v) {
   const body = $('#setBody');
   const cfg = structuredClone(S.st.config);
   const save = async (msg = 'Guardado') => { await api('PUT', '/api/config', cfg); await loadState(); toast(msg); };
-  try { await ({ general: setGeneral, account: setAccount, usage: setUsage, models: setModels, connectors: setConnectors, budget: setBudget }[tab])(body, cfg, save); }
+  try { await ({ general: setGeneral, account: setAccount, usage: setUsage, models: setModels, connectors: setConnectors, keys: setKeys, budget: setBudget }[tab])(body, cfg, save); }
   catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 }
 
@@ -889,11 +1039,14 @@ function setGeneral(body, cfg, save) {
       <div class="two"><label>Cómo te llamamos<input type="text" id="pn" value="${esc(p.name || '')}" placeholder="Tu nombre"></label>
       <label>Idioma de respuesta<select class="in" id="pl">${[['es', 'Español'], ['en', 'English'], ['auto', 'El de mi mensaje']].map(([k, l]) => `<option value="${k}" ${p.language === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
       <label>Instrucciones personales (las leen todos los agentes; se cachean)<textarea class="in" id="pi" rows="5" placeholder="Ej.: Respóndeme corto. Programo en Java/Fabric. No toques la UI del menú principal.">${esc(p.instructions || '')}</textarea></label></div></section>
+    <section class="block"><h2>Corrector</h2><label class="check"><input type="checkbox" id="psc" ${p.spellcheck !== false ? 'checked' : ''}> Revisar ortografía y gramática mientras escribes en el chat (estilo Google Docs)</label>
+      <div class="form two" style="margin-top:10px"><label>Idioma<select class="in" id="psl">${[['auto', 'Detectar (español / inglés)'], ['es', 'Español'], ['en-US', 'Inglés (EE. UU.)'], ['en-GB', 'Inglés (Reino Unido)']].map(([k, l]) => `<option value="${k}" ${(p.spellLang || 'auto') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
+      <p class="muted" style="font-size:12.5px">Usa LanguageTool (languagetool.org): el texto que escribes en el chat se envía a su servicio para revisarlo. Haz clic en una palabra subrayada (o Ctrl+Espacio) para ver sugerencias.</p></section>
     <section class="block"><h2>Apariencia</h2><div class="row">${['light', 'dark', 'system'].map(t => `<button class="btn ${(document.documentElement.dataset.theme || 'system') === t ? 'primary' : ''}" data-theme="${t}">${{ light: 'Claro', dark: 'Oscuro', system: 'Sistema' }[t]}</button>`).join('')}</div></section>
     <section class="block"><h2>Datos</h2><p>Todo se guarda en tu ordenador: <span class="mono">${esc(S.st.dataDir)}</span></p></section>
     <button class="btn primary" id="sv">Guardar</button>`;
   $$('[data-theme]', body).forEach(b => b.onclick = () => { const t = b.dataset.theme; if (t === 'system') { delete document.documentElement.dataset.theme; store.set('theme', ''); } else { document.documentElement.dataset.theme = t; store.set('theme', t); } setGeneral(body, cfg, save); });
-  $('#sv', body).onclick = async () => { cfg.profile = { name: $('#pn').value.trim(), language: $('#pl').value, instructions: $('#pi').value }; await save(); renderSidebar(); };
+  $('#sv', body).onclick = async () => { cfg.profile = { name: $('#pn').value.trim(), language: $('#pl').value, instructions: $('#pi').value, spellcheck: $('#psc').checked, spellLang: $('#psl').value }; await save(); renderSidebar(); };
 }
 
 async function setAccount(body, cfg, save) {
@@ -1314,10 +1467,10 @@ addEventListener('focus', () => {
 (async function init() {
   $$('[data-i]').forEach(e => e.insertAdjacentHTML('afterbegin', ico(e.dataset.i, +e.dataset.s || 17)));
   $$('#sidebar .nav-item').forEach(b => { const l = $('.label', b); if (l && !b.title) b.title = l.textContent; });
-  const toggleSide = () => { document.body.classList.toggle('collapsed'); store.set('collapsed', document.body.classList.contains('collapsed') ? '1' : '0'); syncOpenSide(); $('#toggleSide').title = document.body.classList.contains('collapsed') ? 'Abrir barra lateral (Ctrl+B)' : 'Contraer barra lateral (Ctrl+B)'; };
+  const toggleSide = window.toggleSide = () => { document.body.classList.toggle('collapsed'); store.set('collapsed', document.body.classList.contains('collapsed') ? '1' : '0'); syncOpenSide(); $('#toggleSide').title = document.body.classList.contains('collapsed') ? 'Abrir barra lateral (Ctrl+B)' : 'Contraer barra lateral (Ctrl+B)'; };
   $('#toggleSide').onclick = toggleSide;
   $('.brand img').onclick = () => { if (document.body.classList.contains('collapsed')) toggleSide(); };
-  addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSide(); } });
+
   if (document.documentElement.classList.contains('pre-collapsed')) document.body.classList.add('collapsed');
   syncOpenSide(); addEventListener('resize', syncOpenSide);
   const ping = () => fetch('/api/ping', { method: 'POST' }).catch(() => {});

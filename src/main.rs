@@ -6,6 +6,7 @@
 mod api;
 mod context;
 mod defaults;
+mod documents;
 mod extensions;
 mod integrations;
 mod elevenlabs;

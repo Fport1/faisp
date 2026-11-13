@@ -161,6 +161,8 @@
     if (path.startsWith('/api/providers/') || path.startsWith('/api/cli/') || path === '/api/claude/limits/refresh') return fail(desktopOnly);
     if (path === '/api/claude/limits') return json(null);
     if (path === '/api/limits') return json({ claude: null, providers: {} });
+    if (path === '/api/grammar') return json({ matches: [] });
+    if (path === '/api/pick-file') { alert(desktopOnly); return json({ path: '' }); }
     return fail('Ruta no disponible en la demo: ' + path);
   }
 
