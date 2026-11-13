@@ -105,9 +105,9 @@ function modelPickerHtml(id, value, extraClass = '') {
 function wireModelPicker(sel) {
   if (!sel) return;
   let prev = sel.value;
-  sel.addEventListener('change', () => {
+  sel.addEventListener('change', async () => {
     if (sel.value !== '__custom') { prev = sel.value; return; }
-    const v = (prompt('Modelo como proveedor:modelo (p. ej. openrouter:deepseek/deepseek-chat, ollama:qwen2.5-coder):', prev) || '').trim();
+    const v = (await askText('Modelo como proveedor:modelo (p. ej. openrouter:deepseek/deepseek-chat, ollama:qwen2.5-coder):', prev) || '').trim();
     if (!v) { sel.value = prev; return; }
     sel.insertAdjacentHTML('afterbegin', `<option value="${esc(v)}">${esc(v)}</option>`);
     sel.value = v; prev = v;
@@ -201,7 +201,7 @@ $('#recents').addEventListener('click', async e => {
   const del = e.target.closest('[data-del-chat]');
   if (del) {
     e.stopPropagation();
-    if (!confirm('¿Borrar este chat?')) return;
+    if (!await ask('¿Borrar este chat?', { ok: 'Eliminar', danger: true })) return;
     await api('DELETE', '/api/chats/' + del.dataset.delChat);
     if (S.chatId === del.dataset.delChat) { S.chatId = null; S.chat = null; }
     await loadState(); render(); return;
@@ -240,6 +240,52 @@ function menu(anchor, items) {
   m.style.top = (top < 8 ? r.top - m.offsetHeight - 4 : top) + 'px';
   setTimeout(() => document.addEventListener('click', function off(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('click', off); } }), 0);
 }
+
+// Diálogos propios (en lugar de confirm/prompt del navegador)
+function ask(message, { ok = 'Aceptar', cancel = 'Cancelar', danger = false } = {}) {
+  return new Promise(resolve => {
+    const o = modal('', `<div class="ask">${esc(message).replace(/\n/g, '<br>')}</div>`, [
+      { label: cancel, run: () => resolve(false) },
+      { label: ok, cls: danger ? 'danger-solid' : 'primary', run: () => resolve(true) },
+    ]);
+    o.querySelector('header').remove();
+    const x = () => resolve(false);
+    o.addEventListener('mousedown', e => { if (e.target === o) x(); });
+    o.addEventListener('keydown', e => { if (e.key === 'Enter') { o.querySelector('footer .btn:last-child').click(); } if (e.key === 'Escape') { o.remove(); x(); } });
+    setTimeout(() => o.querySelector('footer .btn:last-child').focus(), 0);
+  });
+}
+function askText(message, value = '', { placeholder = '', secret = false, ok = 'Aceptar' } = {}) {
+  return new Promise(resolve => {
+    const o = modal('', `<div class="form"><label>${esc(message).replace(/\n/g, '<br>')}<input type="${secret ? 'password' : 'text'}" id="askIn" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off"></label></div>`, [
+      { label: 'Cancelar', run: () => resolve(null) },
+      { label: ok, cls: 'primary', run: o => resolve(o.querySelector('#askIn').value) },
+    ]);
+    o.querySelector('header').remove();
+    const inp = o.querySelector('#askIn');
+    o.addEventListener('mousedown', e => { if (e.target === o) resolve(null); });
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') o.querySelector('footer .btn:last-child').click(); if (e.key === 'Escape') { o.remove(); resolve(null); } });
+    setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  });
+}
+
+// Menú contextual propio (el de Edge está desactivado en la ventana nativa)
+document.addEventListener('contextmenu', e => {
+  const field = e.target.closest('input, textarea, [contenteditable="true"]');
+  const sel = String(getSelection() || '');
+  if (!field && !sel) { e.preventDefault(); return; }
+  e.preventDefault();
+  const items = [];
+  const exec = c => { (field || document.activeElement)?.focus(); document.execCommand(c); };
+  if (field && !field.readOnly && sel) items.push({ label: ico('x', 15) + ' Cortar', run: () => exec('cut') });
+  if (sel) items.push({ label: ico('copy', 15) + ' Copiar', run: async () => { try { await navigator.clipboard.writeText(sel); } catch { exec('copy'); } } });
+  if (field && !field.readOnly) items.push({ label: ico('download', 15) + ' Pegar', run: async () => {
+    try { const t = await navigator.clipboard.readText(); field.focus(); document.execCommand('insertText', false, t); } catch { toast('Usa Ctrl+V para pegar'); }
+  } });
+  if (field) items.push({ label: ico('tick', 15) + ' Seleccionar todo', run: () => { field.focus(); field.select ? field.select() : document.execCommand('selectAll'); } });
+  const a = document.createElement('div'); a.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:1px;height:1px`; document.body.appendChild(a);
+  menu(a, items); setTimeout(() => a.remove(), 0);
+});
 
 function modal(title, bodyHtml, buttons = []) {
   const o = document.createElement('div'); o.className = 'overlay';
@@ -410,7 +456,13 @@ function composer() {
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!S.streaming) send(); } });
   sendBtn.disabled = !S.streaming;
   sendBtn.onclick = () => S.streaming ? stopStream() : send();
-  $('#attachBtn', wrap).onclick = attachDialog;
+  $('#attachBtn', wrap).onclick = () => menu($('#attachBtn', wrap), [
+    { label: ico('folder', 16) + '<div><div>Archivo del proyecto</div><div class="sub">Código, textos, modelos…</div></div>', run: attachDialog },
+    { label: ico('image', 16) + '<div><div>Vídeo, audio o imagen del PC</div><div class="sub">Lo analiza Gemini (agente Vídeo y audio)</div></div>', run: async () => {
+      const r = await api('POST', '/api/pick-file').catch(e => ({ error: e.message }));
+      if (r.path) { S.attachments = [...new Set([...S.attachments, r.path])]; renderAttachments(); }
+    } },
+  ]);
   renderAttachments(wrap);
   return wrap;
 }
@@ -557,7 +609,7 @@ document.addEventListener('click', async e => {
     if (b.dataset.act === 'save-code') {
       const a = S.artifacts.find(x => x.path === c.path);
       if (!a) return toast('No encuentro el artefacto de ese archivo.');
-      if (!confirm(`¿Escribir ${c.path} en la carpeta del proyecto? Se guarda copia del archivo anterior.`)) return;
+      if (!await ask(`¿Escribir ${c.path} en la carpeta del proyecto? Se guarda copia del archivo anterior.`)) return;
       await api('POST', `/api/artifacts/${a.id}/apply`, { version: 0 });
       toast('Guardado ' + c.path); await refreshArtifacts();
     }
@@ -594,7 +646,7 @@ async function renderPanel() {
       <h3>Pizarra compartida <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· ${fmtTok(bb.liveTokens)} tok activos</span></h3>
       ${bb.events.length ? bb.events.slice().reverse().map(e => `<div class="ev" style="${e.compressed ? 'opacity:.55' : ''}"><span class="when">${ago(e.ts)}</span><span class="who">${esc(agentById(e.agentId)?.icon || '')} ${esc(e.agentName)}</span><div class="muted" style="font-size:12.5px;margin:2px 0 4px">${esc(e.task.slice(0, 160))}</div>${esc(e.summary)}</div>`).join('') : '<div class="muted" style="font-size:13px">Aún no hay actividad. Todo lo que hagan los agentes queda aquí resumido y lo ven los demás.</div>'}
       ${bb.events.length ? '<div style="margin-top:10px"><button class="btn sm danger" id="clearBb">Vaciar pizarra y memoria</button></div>' : ''}`;
-    $('#clearBb')?.addEventListener('click', async () => { if (confirm('¿Vaciar la pizarra y la memoria de este proyecto?')) { await api('DELETE', `/api/projects/${p.id}/blackboard`); renderPanel(); } });
+    $('#clearBb')?.addEventListener('click', async () => { if (await ask('¿Vaciar la pizarra y la memoria de este proyecto?')) { await api('DELETE', `/api/projects/${p.id}/blackboard`); renderPanel(); } });
     return;
   }
   // Artefacto
@@ -624,11 +676,11 @@ async function renderPanel() {
   $$('.art-view .tabs button').forEach(b => b.onclick = () => { S.artMode = b.dataset.m; renderPanel(); });
   $('#artCopy').onclick = async () => { await navigator.clipboard.writeText(ver.content); toast('Copiado'); };
   $('#artDl').onclick = () => { const url = URL.createObjectURL(new Blob([ver.content], { type: 'text/plain' })); const l = document.createElement('a'); l.href = url; l.download = a.title; l.click(); URL.revokeObjectURL(url); };
-  $('#artDel').onclick = async () => { if (!confirm('¿Eliminar este artefacto (no borra archivos del disco)?')) return; await api('DELETE', '/api/artifacts/' + a.id); S.artifactId = null; await refreshArtifacts(); renderPanel(); };
+  $('#artDel').onclick = async () => { if (!await ask('¿Eliminar este artefacto (no borra archivos del disco)?', { ok: 'Eliminar', danger: true })) return; await api('DELETE', '/api/artifacts/' + a.id); S.artifactId = null; await refreshArtifacts(); renderPanel(); };
   $('#artApply')?.addEventListener('click', async () => {
     let path = a.path;
-    if (!path) { path = prompt('Ruta relativa dentro del proyecto:', a.title); if (!path) return; }
-    if (!confirm(`¿Escribir ${path} (v${vIdx}) en la carpeta del proyecto? Se hace copia del anterior.`)) return;
+    if (!path) { path = await askText('Ruta relativa dentro del proyecto:', a.title); if (!path) return; }
+    if (!await ask(`¿Escribir ${path} (v${vIdx}) en la carpeta del proyecto? Se hace copia del anterior.`)) return;
     await api('POST', `/api/artifacts/${a.id}/apply`, { version: vIdx, path });
     toast('Aplicado: ' + path); await refreshArtifacts(); renderPanel();
   });
@@ -661,7 +713,7 @@ async function viewProjects(v) {
       <p class="desc">${esc((p.brief || 'Sin ficha. Añade una descripción para que todos los agentes la conozcan.').slice(0, 180))}</p>
       <div class="row"><button class="btn sm" data-use="${p.id}">Usar</button><button class="btn sm" data-edit="${p.id}">Editar</button>${p.path ? `<button class="btn sm" data-open="${p.id}">Abrir carpeta</button>` : ''}${p.allowWrites ? `<span class="chip" title="Los agentes escriben directamente (con copia de seguridad)">${ico('pencil', 12)} escritura directa</span>` : ''}</div></div>`).join('')}</div></div>`;
   $('#np').onclick = newProjectFromFolder;
-  $('#np2').onclick = async () => { const name = prompt('Nombre del proyecto:'); if (!name) return; const p = await api('POST', '/api/projects', { name }); await loadState(); setProject(p.id); };
+  $('#np2').onclick = async () => { const name = await askText('Nombre del proyecto:'); if (!name) return; const p = await api('POST', '/api/projects', { name }); await loadState(); setProject(p.id); };
   $$('[data-use]').forEach(b => b.onclick = e => { e.stopPropagation(); setProject(b.dataset.use); S.view = 'chat'; renderSidebar(); render(); });
   $$('[data-edit]').forEach(b => b.onclick = e => { e.stopPropagation(); editProject(b.dataset.edit); });
   $$('[data-open]').forEach(b => b.onclick = e => { e.stopPropagation(); api('POST', `/api/projects/${b.dataset.open}/open`); });
@@ -677,7 +729,7 @@ function editProject(id) {
     <label>Convenciones (estilo, reglas, cosas que NO tocar)<textarea class="in" id="pv" rows="4">${esc(p.conventions)}</textarea></label>
     <label class="check"><input type="checkbox" id="pw" ${p.allowWrites ? 'checked' : ''}> Permitir que los agentes escriban archivos directamente (con copia de seguridad). Si no, quedan como artefactos para que los apliques tú.</label>
   </div>`, [
-    { label: 'Eliminar', cls: 'danger', run: async () => { if (!confirm('¿Eliminar el proyecto de faisp (no borra la carpeta)? Se borran sus chats y pizarra.')) return true; await api('DELETE', '/api/projects/' + id); await loadState(); render(); } },
+    { label: 'Eliminar', cls: 'danger', run: async () => { if (!await ask('¿Eliminar el proyecto de faisp (no borra la carpeta)? Se borran sus chats y pizarra.')) return true; await api('DELETE', '/api/projects/' + id); await loadState(); render(); } },
     { label: 'Cancelar' },
     { label: 'Guardar', cls: 'primary', run: async o => {
       await api('PATCH', '/api/projects/' + id, { name: $('#pn', o).value, color: $('#pc', o).value, path: $('#pp', o).value, brief: $('#pb', o).value, conventions: $('#pv', o).value, allowWrites: $('#pw', o).checked });
@@ -729,7 +781,7 @@ function editAgent(id) {
     <label class="check"><input type="checkbox" id="at" ${a.tools ? 'checked' : ''}> Puede explorar y escribir en la carpeta del proyecto (herramientas)</label>
     <label class="check"><input type="checkbox" id="ax" ${a.disabled ? 'checked' : ''}> Desactivado</label></div>`,
     fromPlugin ? [{ label: 'Cerrar' }] : [
-      ...(id && id !== 'orquestador' ? [{ label: 'Eliminar', cls: 'danger', run: async () => { if (!confirm('¿Eliminar agente?')) return true; await api('PUT', '/api/agents', cfgAgents.filter(x => x.id !== id)); await loadState(); render(); } }] : []),
+      ...(id && id !== 'orquestador' ? [{ label: 'Eliminar', cls: 'danger', run: async () => { if (!await ask('¿Eliminar agente?', { ok: 'Eliminar', danger: true })) return true; await api('PUT', '/api/agents', cfgAgents.filter(x => x.id !== id)); await loadState(); render(); } }] : []),
       { label: 'Cancelar' },
       { label: 'Guardar', cls: 'primary', run: async o => {
         const n = { ...a, id: id || $('#ai', o).value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-'), name: $('#an', o).value, icon: $('#aic button.on', o)?.dataset.ic || a.icon, model: $('#am', o).value.trim(), effort: $('#ae', o).value, color: $('#aco', o).value,
@@ -787,7 +839,7 @@ async function viewRoutines(v) {
   $$('[data-en]').forEach(c => c.onchange = async () => { await api('POST', '/api/routines', { ...rs.find(r => r.id === c.dataset.en), enabled: c.checked }); await loadState(); });
   $$('[data-run]').forEach(b => b.onclick = async () => { const r = await api('POST', `/api/routines/${encodeURIComponent(b.dataset.run)}/run`); toast('Rutina en marcha'); await loadState(); setTimeout(() => openChat(r.chatId), 600); });
   $$('[data-oc]').forEach(b => b.onclick = () => openChat(b.dataset.oc));
-  $$('[data-rd]').forEach(b => b.onclick = async () => { if (!confirm('¿Eliminar rutina?')) return; await api('DELETE', `/api/routines/${encodeURIComponent(b.dataset.rd)}`); await loadState(); render(); });
+  $$('[data-rd]').forEach(b => b.onclick = async () => { if (!await ask('¿Eliminar rutina?', { ok: 'Eliminar', danger: true })) return; await api('DELETE', `/api/routines/${encodeURIComponent(b.dataset.rd)}`); await loadState(); render(); });
 }
 
 async function viewUsage(v) {
@@ -869,7 +921,7 @@ async function setAccount(body, cfg, save) {
   api('GET', '/api/cli/codex/status').then(cx => {
     const box = $('#codexBox', body); if (!box) return;
     box.innerHTML = `<div class="row"><div class="avatar big">${ico('bot', 18)}</div><div style="flex:1;min-width:0"><b>${!cx.found ? 'Codex CLI no instalado' : cx.loggedIn ? 'Sesión iniciada' : 'Sin sesión'}</b><div class="muted" style="font-size:13px">${esc(cx.status || 'Necesita Node.js (ya lo tienes)')}</div></div>${!cx.found ? '<button class="btn" id="cxi">Instalar Codex CLI</button>' : cx.loggedIn ? '' : '<button class="btn accent" id="cxl">Iniciar sesión con ChatGPT</button>'}</div>`;
-    $('#cxi', box)?.addEventListener('click', async () => { if (!confirm('Se abrirá una consola que ejecuta: npm install -g @openai/codex (paquete oficial de OpenAI). ¿Continuar?')) return; await api('POST', '/api/cli/codex/install'); toast('Instalando en la consola; vuelve aquí al terminar'); });
+    $('#cxi', box)?.addEventListener('click', async () => { if (!await ask('Se abrirá una consola que ejecuta: npm install -g @openai/codex (paquete oficial de OpenAI). ¿Continuar?')) return; await api('POST', '/api/cli/codex/install'); toast('Instalando en la consola; vuelve aquí al terminar'); });
     $('#cxl', box)?.addEventListener('click', async () => { await api('POST', '/api/cli/codex/login'); toast('Sigue los pasos en el navegador'); });
   }).catch(() => {});
   $('#li', body)?.addEventListener('click', async () => {
@@ -884,7 +936,7 @@ async function setAccount(body, cfg, save) {
       if (a?.status?.loggedIn && !a.expired) { clearInterval(S.loginTimer); toast('Sesión iniciada'); setAccount(body, cfg, save); }
     }, 3000);
   });
-  $('#lo', body)?.addEventListener('click', async () => { if (!confirm('¿Cerrar la sesión de Claude Code en este PC?')) return; await api('POST', '/api/account/logout'); setAccount(body, cfg, save); });
+  $('#lo', body)?.addEventListener('click', async () => { if (!await ask('¿Cerrar la sesión de Claude Code en este PC?')) return; await api('POST', '/api/account/logout'); setAccount(body, cfg, save); });
   $('#sv', body).onclick = async () => { cfg.routing.useSubscription = $('#us').checked; cfg.license = { plan: $('#lplan').value, key: $('#lkey').value, email: $('#lmail').value }; await save(); };
   $('#us', body).onchange = async e => { cfg.routing.useSubscription = e.target.checked; await save(e.target.checked ? 'Se usará tu suscripción primero' : 'Suscripción desactivada'); };
 }
@@ -1013,7 +1065,7 @@ function setModels(body, cfg, save) {
   $('#svd', body).onclick = async () => { readDefaults(); await save(); };
   $('#apply', body).onclick = async () => {
     readDefaults();
-    if (!confirm(`¿Poner ${cfg.defaults.model} con esfuerzo ${cfg.defaults.effort} en todos los agentes? Sus modelos de respaldo se mantienen.`)) return;
+    if (!await ask(`¿Poner ${cfg.defaults.model} con esfuerzo ${cfg.defaults.effort} en todos los agentes? Sus modelos de respaldo se mantienen.`)) return;
     cfg.agents = cfg.agents.map(a => a.plugin ? a : { ...a, model: cfg.defaults.model, effort: cfg.defaults.effort });
     await save('Aplicado a todos los agentes');
   };
@@ -1023,7 +1075,7 @@ function setModels(body, cfg, save) {
       <div class="form three"><label>Tipo<select class="in" data-pf="${esc(id)}.type">${[['anthropic', 'anthropic'], ['openai', 'openai (compatible)'], ['claude-code', 'Claude Code (suscripción)'], ['mock', 'demo']].map(([k, l]) => `<option value="${k}" ${p.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       ${(p.baseUrl || '').includes('{account_id}') ? `<label>ID de cuenta<input type="text" data-pf="${esc(id)}.accountId" value="${esc(p.accountId || '')}" placeholder="Workers AI → Usar REST API → Account ID"></label>` : `<label>${p.type === 'claude-code' ? 'Ruta de claude.exe (vacío = automática)' : 'URL base'}<input type="text" data-pf="${esc(id)}.baseUrl" value="${esc(p.baseUrl)}"></label>`}
       ${p.type === 'claude-code' ? '<label>Sesión<input type="text" disabled value="En Ajustes → Cuenta"></label>' : `<label>API key ${p.noKeyNeeded ? '(no necesaria)' : ''}<div class="keybox"><input type="password" data-pf="${esc(id)}.apiKey" value="${esc(p.apiKey)}" placeholder="${p.noKeyNeeded ? 'local' : 'pega tu clave'}" autocomplete="off"><button type="button" class="icon-btn" data-eye="${esc(id)}" title="Ver u ocultar la clave">${ico('eye', 15)}</button></div></label>`}</div></div>`).join('');
-    $$('[data-rmp]').forEach(b => b.onclick = () => { if (confirm('¿Quitar proveedor?')) { delete cfg.providers[b.dataset.rmp]; drawProvs(); } });
+    $$('[data-rmp]').forEach(b => b.onclick = async () => { if (await ask('¿Quitar proveedor?', { ok: 'Quitar', danger: true })) { delete cfg.providers[b.dataset.rmp]; drawProvs(); } });
     $$('[data-pf]').forEach(inp => inp.onchange = () => { const [id, f] = inp.dataset.pf.split('.'); cfg.providers[id][f] = inp.value; });
     $$('[data-ptest]').forEach(b => b.onclick = () => testProvider(b.dataset.ptest));
     $$('[data-eye]').forEach(b => b.onclick = async () => {
@@ -1054,8 +1106,8 @@ function setModels(body, cfg, save) {
   }
   drawProvs();
   $('#testAll', body).onclick = async () => { readDefaults(); await save('Guardado; probando…'); for (const id of Object.keys(cfg.providers)) if (S.st.providerReady[id]) await testProvider(id); };
-  $('#addProv', body).onclick = () => {
-    const id = (prompt('ID corto del proveedor (ej. deepseek, azure):') || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  $('#addProv', body).onclick = async () => {
+    const id = (await askText('ID corto del proveedor (ej. deepseek, azure):') || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
     if (!id) return;
     cfg.providers[id] = { label: id, type: 'openai', baseUrl: 'https://', apiKey: '', noKeyNeeded: false, headers: {}, free: false, responsesApi: false, note: '' }; drawProvs();
   };
@@ -1105,42 +1157,10 @@ async function setConnectors(body, cfg, save) {
     toast('No se completó el inicio de sesión'); return r;
   };
 
-  $$('[data-on]', body).forEach(b => b.onclick = async () => {
-    const c = CATALOG.find(x => x.id === b.dataset.on);
-    try {
-      if (c.auth === 'apikey') {
-        const key = prompt('API key de ElevenLabs (elevenlabs.io → Developers → API Keys):');
-        if (!key) return;
-        cfg.providers.elevenlabs = { ...(cfg.providers.elevenlabs || { label: 'ElevenLabs', type: 'elevenlabs', baseUrl: 'https://api.elevenlabs.io' }), apiKey: key.trim() };
-        assign('elevenlabs', c.agents);
-        await save('ElevenLabs conectado'); return reload();
-      }
-      const base = { label: c.name, description: c.desc, transport: 'http', url: c.url, enabled: true, source: 'catálogo', headers: c.headers || {} };
-      if (c.auth === 'gh') {
-        const useGh = confirm('¿Usar la sesión de GitHub CLI (gh) de este PC?\n\nAceptar: usa «gh auth token».\nCancelar: pegar un token personal (PAT).');
-        if (useGh) base.tokenCommand = 'gh auth token';
-        else { const t = prompt('Token personal de GitHub (PAT):'); if (!t) return; base.token = t.trim(); }
-        cfg.mcpServers[c.id] = base; assign(c.id, c.agents);
-        await save('GitHub conectado');
-        const out = await api('POST', `/api/mcp/${c.id}/test`).catch(e => ({ error: e.message }));
-        toast(out.error ? 'Error: ' + out.error.slice(0, 120) : `GitHub: ${out.tools.length} herramientas`);
-        return reload();
-      }
-      if (c.auth === 'google') {
-        const id = prompt('Client ID de tu cliente OAuth de Google Cloud (tipo «Aplicación web», con la API MCP del producto activada).\nURI de redirección a registrar: http://127.0.0.1:4317/oauth/callback');
-        if (!id) return;
-        const secret = prompt('Client secret de ese cliente OAuth:') || '';
-        cfg.mcpServers[c.id] = { ...base, oauthClientId: id.trim(), oauthClientSecret: secret.trim() };
-        assign(c.id, c.agents);
-        return oauthFlow(c.id);
-      }
-      cfg.mcpServers[c.id] = base; assign(c.id, c.agents);
-      await oauthFlow(c.id);
-    } catch (e) { toast('Error: ' + e.message); }
-  });
+  $$('[data-on]', body).forEach(b => b.onclick = () => connectWizard(CATALOG.find(x => x.id === b.dataset.on), cfg, save, reload, assign));
   $$('[data-off]', body).forEach(b => b.onclick = async () => {
     const id = b.dataset.off;
-    if (!confirm('¿Desconectar? Se borran sus credenciales en faisp.')) return;
+    if (!await ask('¿Desconectar? Se borran sus credenciales en faisp.', { ok: 'Desconectar', danger: true })) return;
     if (id === 'elevenlabs') { cfg.providers.elevenlabs.apiKey = ''; unassign('elevenlabs'); await save('Desconectado'); return reload(); }
     await api('POST', `/api/mcp/${encodeURIComponent(id)}/disconnect`).catch(() => {});
     await loadState(); const c2 = structuredClone(S.st.config); delete c2.mcpServers[id]; for (const a of c2.agents) a.mcp = (a.mcp || []).filter(x => x !== id);
@@ -1174,6 +1194,100 @@ async function setConnectors(body, cfg, save) {
       out.innerHTML = `<div class="model-list" style="margin-top:8px">${r.tools.map(t => `<span class="chip" title="${esc(t.description)}">${t.readOnly ? ico('eye', 11) : ico('pencil', 11)} ${esc(t.name)}</span>`).join('')}</div>`;
     } catch (e) { out.innerHTML = `<div class="err" style="font-size:12.5px;margin-top:8px">${esc(e.message.slice(0, 300))}</div>`; }
   });
+}
+
+const CONNECT_HELP = {
+  github: { tokenUrl: 'https://github.com/settings/personal-access-tokens/new' },
+  elevenlabs: { keyUrl: 'https://elevenlabs.io/app/settings/api-keys' },
+  google: { preview: 'https://developers.google.com/workspace/preview', library: 'https://console.cloud.google.com/apis/library', credentials: 'https://console.cloud.google.com/apis/credentials', api: { gdrive: 'drivemcp.googleapis.com', gmail: 'gmailmcp.googleapis.com', gcalendar: 'calendarmcp.googleapis.com' } },
+};
+const REDIRECT_URI = 'http://127.0.0.1:4317/oauth/callback';
+
+function connectWizard(c, cfg, save, reload, assign) {
+  const head = `<div class="wiz-head">${brandTile(c.id, c.name, 44)}<div><b>Conectar ${esc(c.name)}</b><div class="muted" style="font-size:13px">${esc(c.desc)}</div></div></div>`;
+  const base = { label: c.name, description: c.desc, transport: 'http', url: c.url, enabled: true, source: 'catálogo', headers: c.headers || {} };
+  const finishOAuth = async (o, name) => {
+    const body = o.querySelector('.body'); const foot = o.querySelector('footer');
+    foot.innerHTML = '<button class="btn" data-cancel>Cancelar</button>';
+    body.innerHTML = head + `<div class="wiz-wait"><svg class="spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg><div><b>Esperando la autorización…</b><div class="muted" style="font-size:13px">Se abrió tu navegador. Inicia sesión en ${esc(c.name)} y acepta el acceso de faisp; esto se actualiza solo.</div></div></div>`;
+    let cancelled = false;
+    foot.querySelector('[data-cancel]').onclick = () => { cancelled = true; o.remove(); };
+    try {
+      await save('Guardado');
+      await api('POST', `/api/mcp/${encodeURIComponent(name)}/connect`);
+    } catch (e) { body.insertAdjacentHTML('beforeend', `<div class="test bad">${ico('x', 13)} ${esc(e.message.slice(0, 300))}</div>`); return; }
+    for (let i = 0; i < 100 && !cancelled; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      await loadState();
+      if (S.st.config.mcpServers?.[name]?.oauth) {
+        const t = await api('POST', `/api/mcp/${encodeURIComponent(name)}/test`).catch(e => ({ error: e.message }));
+        body.innerHTML = head + (t.error ? `<div class="test bad">${ico('x', 13)} Autorizado, pero falló la conexión: ${esc(t.error.slice(0, 200))}</div>` : `<div class="test ok">${ico('tick', 13)} Conectado · ${t.tools.length} herramientas disponibles</div>`);
+        foot.innerHTML = '<button class="btn primary" data-done>Listo</button>';
+        foot.querySelector('[data-done]').onclick = () => { o.remove(); reload(); };
+        return;
+      }
+    }
+    if (!cancelled) body.insertAdjacentHTML('beforeend', '<div class="test bad">No se completó la autorización. Puedes cerrar y volver a intentarlo.</div>');
+  };
+
+  if (c.auth === 'apikey') {
+    const o = modal('', head + `<ol class="steps"><li>Abre <a href="${CONNECT_HELP.elevenlabs.keyUrl}" target="_blank" rel="noopener">tus claves de ElevenLabs</a> y crea una (con permiso de voces, texto a voz, efectos y música).</li><li>Pégala aquí:</li></ol>
+      <div class="form"><div class="keybox"><input type="password" id="wKey" placeholder="sk_…" autocomplete="off"><button type="button" class="icon-btn" id="wEye">${ico('eye', 15)}</button></div><div id="wOut"></div></div>`,
+      [{ label: 'Cancelar' }, { label: 'Conectar', cls: 'primary', run: async o => {
+        const key = o.querySelector('#wKey').value.trim(); if (!key) throw new Error('Pega la clave');
+        cfg.providers.elevenlabs = { ...(cfg.providers.elevenlabs || { label: 'ElevenLabs', type: 'elevenlabs', baseUrl: 'https://api.elevenlabs.io' }), apiKey: key };
+        assign('elevenlabs', c.agents); await save('ElevenLabs conectado');
+        const d = await api('GET', '/api/limits').catch(() => null); const acc = d?.providers?.elevenlabs?.account;
+        if (!acc) { o.querySelector('#wOut').innerHTML = `<div class="test bad">${ico('x', 13)} Guardada, pero no pude leer tu cuenta: revisa la clave.</div>`; return true; }
+        toast(`ElevenLabs conectado · plan ${acc.tier || ''}`); reload();
+      } }]);
+    o.querySelector('header').remove();
+    o.querySelector('#wEye').onclick = () => { const i = o.querySelector('#wKey'); i.type = i.type === 'password' ? 'text' : 'password'; };
+    return;
+  }
+  if (c.auth === 'gh') {
+    const o = modal('', head + `<div class="choice"><label class="opt"><input type="radio" name="gm" value="gh" checked><div><b>Usar mi sesión de GitHub CLI</b><span>Recomendado. faisp pide el token a <span class="mono">gh</span> cada vez; no guarda nada.</span></div></label>
+      <label class="opt"><input type="radio" name="gm" value="pat"><div><b>Token personal (PAT)</b><span>Créalo en <a href="${CONNECT_HELP.github.tokenUrl}" target="_blank" rel="noopener">GitHub → Tokens</a> con acceso a los repos que quieras.</span></div></label>
+      <div class="form" id="patBox" style="display:none"><input type="password" id="wPat" placeholder="github_pat_…" autocomplete="off"></div></div><div id="wOut"></div>`,
+      [{ label: 'Cancelar' }, { label: 'Conectar', cls: 'primary', run: async o => {
+        const mode = o.querySelector('input[name=gm]:checked').value;
+        const srv = { ...base };
+        if (mode === 'gh') srv.tokenCommand = 'gh auth token'; else { const t = o.querySelector('#wPat').value.trim(); if (!t) throw new Error('Pega el token'); srv.token = t; }
+        cfg.mcpServers[c.id] = srv; assign(c.id, c.agents); await save('Guardado');
+        const out = o.querySelector('#wOut'); out.innerHTML = '<div class="muted" style="margin-top:10px">Comprobando…</div>';
+        const t = await api('POST', `/api/mcp/${c.id}/test`).catch(e => ({ error: e.message }));
+        if (t.error) { out.innerHTML = `<div class="test bad">${ico('x', 13)} ${esc(t.error.slice(0, 220))}</div>`; return true; }
+        toast(`GitHub conectado · ${t.tools.length} herramientas`); reload();
+      } }]);
+    o.querySelector('header').remove();
+    o.querySelectorAll('input[name=gm]').forEach(r => r.onchange = () => { o.querySelector('#patBox').style.display = o.querySelector('input[name=gm]:checked').value === 'pat' ? '' : 'none'; });
+    return;
+  }
+  if (c.auth === 'google') {
+    const g = CONNECT_HELP.google;
+    const o = modal('', head + `<div class="test warnbox">${ico('alert', 13)} Google ofrece estos conectores en vista previa para desarrolladores y exige que crees tu propio cliente OAuth. Es una configuración única.</div>
+      <ol class="steps">
+        <li>Únete al <a href="${g.preview}" target="_blank" rel="noopener">programa de vista previa de Google Workspace</a>.</li>
+        <li>En Google Cloud, activa la API <span class="mono">${g.api[c.id]}</span> desde la <a href="${g.library}" target="_blank" rel="noopener">biblioteca de APIs</a>.</li>
+        <li>En <a href="${g.credentials}" target="_blank" rel="noopener">Credenciales</a>, crea un «ID de cliente de OAuth» de tipo <b>Aplicación web</b> y añade esta URI de redirección autorizada:
+          <div class="copyline"><span class="mono">${REDIRECT_URI}</span><button class="btn sm" id="wCopy">${ico('copy', 12)} Copiar</button></div></li>
+        <li>Pega aquí el ID y el secreto del cliente:</li></ol>
+      <div class="form"><label>Client ID<input type="text" id="wCid" placeholder="…apps.googleusercontent.com" value="${esc(cfg.mcpServers?.[c.id]?.oauthClientId || '')}"></label><label>Client secret<input type="password" id="wSec" autocomplete="off"></label></div>`,
+      [{ label: 'Cancelar' }, { label: 'Continuar en el navegador', cls: 'primary', run: async o => {
+        const id = o.querySelector('#wCid').value.trim(), sec = o.querySelector('#wSec').value.trim();
+        if (!id || !sec) throw new Error('Faltan el Client ID o el secret');
+        cfg.mcpServers[c.id] = { ...base, oauthClientId: id, oauthClientSecret: sec }; assign(c.id, c.agents);
+        finishOAuth(o, c.id); return true;
+      } }]);
+    o.querySelector('header').remove();
+    o.querySelector('#wCopy').onclick = async () => { await navigator.clipboard.writeText(REDIRECT_URI); toast('URI copiada'); };
+    return;
+  }
+  // OAuth estándar (Vercel, Notion, Linear)
+  const o = modal('', head + `<ol class="steps"><li>Se abrirá tu navegador en la página oficial de ${esc(c.name)}.</li><li>Inicia sesión y acepta el acceso de <b>faisp</b>.</li><li>Vuelve aquí: la conexión se completa sola.</li></ol>
+    <p class="muted" style="font-size:12.5px">faisp guarda el permiso solo en este PC. Puedes desconectarlo cuando quieras.</p>`,
+    [{ label: 'Cancelar' }, { label: 'Continuar en el navegador', cls: 'primary', run: async o => { cfg.mcpServers[c.id] = base; assign(c.id, c.agents); finishOAuth(o, c.id); return true; } }]);
+  o.querySelector('header').remove();
 }
 
 function agentsUsing(cfg, name) {

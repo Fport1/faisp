@@ -9,6 +9,7 @@ mod defaults;
 mod extensions;
 mod integrations;
 mod elevenlabs;
+mod gemini_media;
 mod mcp;
 mod mcp_http;
 mod orchestrator;

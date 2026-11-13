@@ -43,9 +43,20 @@ fn open(target: &EventLoopWindowTarget<UserEvent>, url: &str, ctx: &mut WebConte
     let window = wb.build(target)?;
     let origin = url.trim_end_matches('/').to_string();
     let o2 = origin.clone();
-    let webview = WebViewBuilder::new_with_web_context(ctx)
+    let mut builder = WebViewBuilder::new_with_web_context(ctx)
         .with_url(url)
         .with_devtools(cfg!(debug_assertions))
+        // Que se comporte como una app, no como Edge: sin zoom con Ctrl+rueda, sin gestos atrás/adelante, sin autocompletar
+        .with_hotkeys_zoom(false)
+        .with_back_forward_navigation_gestures(false)
+        .with_general_autofill_enabled(false);
+    #[cfg(windows)]
+    {
+        use wry::WebViewBuilderExtWindows;
+        // Sin menú contextual de Edge ni atajos del navegador (Ctrl+F, Ctrl+P, F5…); copiar/pegar siguen funcionando
+        builder = builder.with_browser_accelerator_keys(cfg!(debug_assertions)).with_default_context_menus(cfg!(debug_assertions));
+    }
+    let webview = builder
         // Enlaces externos (documentación, inicio de sesión de conectores…) → navegador del sistema
         .with_navigation_handler(move |u| {
             if u.starts_with(&origin) || u.starts_with("about:") || u.starts_with("data:") || u.starts_with("blob:") {

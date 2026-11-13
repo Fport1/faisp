@@ -29,6 +29,8 @@ pub struct AppState {
     pub approvals: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
     /// Autorizaciones OAuth de conectores en curso
     pub oauth: crate::mcp_http::OAuthPending,
+    /// Archivos del PC que el usuario eligió con el diálogo (se pueden leer aunque estén fuera del proyecto)
+    pub picked: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -59,6 +61,7 @@ impl AppState {
             mcp: Default::default(),
             approvals: Default::default(),
             oauth: Default::default(),
+            picked: Default::default(),
         });
         st.flush();
         st
@@ -472,6 +475,9 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
                 };
             }
 
+            if name == "analizar_medio_gemini" {
+                return gemini_media_tool(&st, project.as_ref(), &chat_id, &agent_id, &input).await;
+            }
             if name.starts_with("elevenlabs_") {
                 return elevenlabs_tool(&st, &tx, &step_id, &mode, project.as_ref(), &name, &input).await;
             }
@@ -556,6 +562,36 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
             format!("Herramienta desconocida: {name}")
         })
     })
+}
+
+async fn gemini_media_tool(st: &Arc<AppState>, project: Option<&Project>, chat_id: &str, agent_id: &str, input: &Value) -> String {
+    let cfg = st.cfg.read().unwrap().clone();
+    let key = cfg.providers.get("gemini").and_then(|p| providers::api_key("gemini", p));
+    let Some(key) = key else { return "Gemini no tiene API key. Pide al usuario que la añada (gratis) en Ajustes → Modelos → Google Gemini.".into() };
+    let ruta = input["ruta"].as_str().unwrap_or("").to_string();
+    let pregunta = input["pregunta"].as_str().unwrap_or("Describe el contenido").to_string();
+    // Ruta: dentro del proyecto, o un archivo que el usuario eligió con el diálogo
+    let p = std::path::PathBuf::from(&ruta);
+    let path = if p.is_absolute() {
+        if st.picked.lock().unwrap().contains(&ruta) || project.map(|pr| !pr.path.is_empty() && p.starts_with(&pr.path)).unwrap_or(false) { p } else { return "Esa ruta no está permitida: adjunta el archivo con el botón + del chat.".into() }
+    } else {
+        match project.map(|pr| safe_path(pr, &ruta)) {
+            Some(Ok(x)) => x,
+            _ => return "No encuentro ese archivo en el proyecto.".into(),
+        }
+    };
+    if !path.exists() {
+        return format!("No existe: {}", path.display());
+    }
+    let model = "gemini-3.8-flash";
+    match crate::gemini_media::analyze(&st.http, &key, model, &path, &pregunta).await {
+        Ok((text, inp, out)) => {
+            let r = LlmResult { text: text.clone(), provider: "gemini".into(), model: model.into(), usage: TokenUsage { input: inp, output: out, ..Default::default() }, ..Default::default() };
+            record_usage(st, project.map(|p| p.id.clone()), Some(chat_id.into()), agent_id, "media", &r);
+            truncate(&text, 30000)
+        }
+        Err(e) => format!("Error de Gemini: {e}"),
+    }
 }
 
 pub fn eleven_key(cfg: &Config) -> Option<String> {
@@ -731,6 +767,16 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
             parts.push("## Aviso\nElevenLabs no está conectado: pide al usuario su API key en Ajustes → Conectores.".into());
         }
     }
+    if agent.mcp.iter().any(|m| m == "gemini-media") {
+        specs.push(crate::gemini_media::tool_spec());
+        let media: Vec<&String> = step.attachments.iter().filter(|a| crate::gemini_media::mime_for(std::path::Path::new(a.as_str())).is_some()).collect();
+        if !media.is_empty() {
+            parts.push(format!("## Archivos multimedia adjuntos\nAnalízalos con analizar_medio_gemini:\n{}", media.iter().map(|m| format!("- {m}")).collect::<Vec<_>>().join("\n")));
+        }
+        if cfg.providers.get("gemini").map(|p| p.api_key.is_empty()).unwrap_or(true) && std::env::var("GEMINI_API_KEY").is_err() {
+            parts.push("## Aviso\nGemini no tiene clave: pide al usuario que la añada en Ajustes → Modelos → Google Gemini (es gratis).".into());
+        }
+    }
     // Para Claude Code: mismo conjunto de servidores MCP en un .mcp.json temporal
     let mcp_config = if mcp_cc.is_empty() {
         None
@@ -896,6 +942,10 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
     let _ = tx.send(("status".into(), json!({"text": if agent_id.is_some() { "Enviando al agente…" } else { "Planificando…" }})));
 
     let planner = st.cfg.read().unwrap().routing.planner.clone();
+    let agent_id = agent_id.or_else(|| {
+        let media = attachments.iter().any(|a| crate::gemini_media::mime_for(std::path::Path::new(a)).is_some());
+        (media && st.agent("multimedia").is_some()).then(|| "multimedia".to_string())
+    });
     let (reply, mut steps, plan_usage) = if let Some(a) = &agent_id {
         (None, heuristic_plan(&st, &text, Some(a)), None)
     } else if planner == "heuristic" {

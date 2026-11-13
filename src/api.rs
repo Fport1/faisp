@@ -128,7 +128,12 @@ async fn state(State(st): St) -> Json<Value> {
             p.api_key = mask(&p.api_key);
         }
     }
-    let ready: BTreeMap<String, bool> = cfg.providers.keys().map(|k| (k.clone(), provider_ready(&cfg, k))).collect();
+    let mut ready: BTreeMap<String, bool> = BTreeMap::new();
+    for (k, p) in &cfg.providers {
+        // Los locales (Ollama, LiteLLM) solo cuentan si responden de verdad
+        let ok = if p.no_key_needed && p.kind == "openai" { crate::providers::usable(&st.http, &cfg, &format!("{k}:x")).await } else { provider_ready(&cfg, k) };
+        ready.insert(k.clone(), ok);
+    }
     let agents = st.all_agents();
     let db = st.db.lock().unwrap();
     let chats: Vec<Value> = {
@@ -735,6 +740,7 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/claude/limits", get(claude_limits_get))
         .route("/api/limits", get(all_limits))
         .route("/api/window/open", post(window_open))
+        .route("/api/pick-file", post(pick_file))
         .route("/api/providers/{id}/key", get(provider_key))
         .route("/api/claude/limits/refresh", post(claude_limits_refresh))
         .route("/api/cli/codex/login", post(codex_login))
@@ -777,8 +783,12 @@ async fn provider_test(State(st): St, Path(id): Path<String>, Json(b): Json<Test
             model = list.iter().find(|m| m.ends_with(":free")).or(list.first()).cloned().unwrap_or_default();
         }
     }
+    if p.no_key_needed && p.kind == "openai" && !crate::providers::usable(&st.http, &cfg, &format!("{id}:x")).await {
+        let how = if id == "ollama" { " Descárgalo en ollama.com, ábrelo y baja un modelo (por ejemplo: ollama pull qwen2.5-coder)." } else { "" };
+        return Ok(Json(json!({"ok": false, "error": format!("{} no responde en {}. ¿Está instalado y abierto?{how}", p.label, crate::providers::base_of(&p))})));
+    }
     if !crate::providers::provider_ready(&cfg, &id) {
-        return Ok(Json(json!({"ok": false, "error": if p.kind == "claude-code" || p.kind == "codex-cli" { "No está instalado" } else { "Falta la API key" }})));
+        return Ok(Json(json!({"ok": false, "error": if p.kind == "claude-code" || p.kind == "codex-cli" { "No está instalado" } else { "Falta la API key: pulsa «Obtener clave»" }})));
     }
     let req = crate::providers::LlmRequest {
         model_ref: format!("{id}:{model}"),
@@ -795,7 +805,7 @@ async fn provider_test(State(st): St, Path(id): Path<String>, Json(b): Json<Test
     Ok(Json(match r {
         Ok(Ok(res)) if res.demo => json!({"ok": false, "error": "Sin configurar (respondió el modo demo)"}),
         Ok(Ok(res)) => json!({"ok": true, "ms": ms, "model": res.model, "text": res.text.chars().take(120).collect::<String>(), "tokens": res.usage.input + res.usage.output}),
-        Ok(Err(e)) => json!({"ok": false, "ms": ms, "error": e.to_string().chars().take(300).collect::<String>()}),
+        Ok(Err(e)) => json!({"ok": false, "ms": ms, "error": friendly_error(&e.to_string(), &p.label)}),
         Err(_) => json!({"ok": false, "error": "Tiempo agotado (120 s)"}),
     }))
 }
@@ -1004,6 +1014,42 @@ async fn all_limits(State(st): St) -> ApiResult {
         }));
     }
     Ok(Json(json!({"claude": crate::providers::claude_limits(), "providers": providers})))
+}
+
+fn friendly_error(e: &str, label: &str) -> String {
+    let l = e.to_lowercase();
+    let msg = if l.contains("error sending request") || l.contains("connect") || l.contains("dns") {
+        format!("No se pudo conectar con {label}. Revisa tu conexión o que el servicio esté disponible.")
+    } else if l.contains("http 401") || l.contains("http 403") || l.contains("invalid api key") || l.contains("unauthorized") {
+        format!("{label} rechazó la clave: comprueba que está bien copiada y activa.")
+    } else if l.contains("http 404") || l.contains("not found") || l.contains("does not exist") {
+        format!("Ese modelo no existe en {label}: elige otro con «Ver modelos».")
+    } else if l.contains("http 429") || l.contains("rate limit") || l.contains("quota") {
+        format!("{label}: límite de uso alcanzado. Espera un poco o revisa tu plan.")
+    } else if l.contains("http 402") || l.contains("credit") || l.contains("billing") || l.contains("insufficient") {
+        format!("{label}: sin saldo o sin facturación activada.")
+    } else {
+        return e.chars().take(300).collect();
+    };
+    format!("{msg}  (detalle: {})", e.chars().take(140).collect::<String>())
+}
+
+async fn pick_file(State(st): St) -> ApiResult {
+    #[cfg(windows)]
+    {
+        let script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; $o=New-Object System.Windows.Forms.Form -Property @{TopMost=$true}; $f=New-Object System.Windows.Forms.OpenFileDialog; $f.Title='Adjuntar archivo'; $f.Filter='Vídeo, audio e imagen|*.mp4;*.mov;*.webm;*.mkv;*.avi;*.mp3;*.wav;*.ogg;*.flac;*.m4a;*.aac;*.png;*.jpg;*.jpeg;*.webp;*.gif;*.pdf|Todos|*.*'; if($f.ShowDialog($o) -eq 'OK'){ $f.FileName }";
+        let mut cmd = tokio::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-STA", "-Command", script]);
+        hidden(&mut cmd);
+        let out = cmd.output().await.map_err(bad)?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !path.is_empty() {
+            st.picked.lock().unwrap().insert(path.clone());
+        }
+        return Ok(Json(json!({"path": path})));
+    }
+    #[allow(unreachable_code)]
+    Ok(Json(json!({"path": ""})))
 }
 
 async fn window_open() -> ApiResult {

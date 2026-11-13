@@ -105,6 +105,11 @@ pub fn default_agents() -> Vec<Agent> {
             &["voz", "voces", "narración", "narracion", "narrador", "doblaje", "audio", "sonido", "sonidos", "efecto de sonido", "música", "musica", "banda sonora", "elevenlabs", "tts"],
             "Eres el diseñador de sonido del equipo. Usa las herramientas de ElevenLabs: primero lista las voces para elegir la adecuada, luego genera. Nombra los archivos de forma ordenada. Si es para Minecraft, recuerda que solo carga .ogg (mono si suena desde un punto del mundo) y registra los sonidos en sounds.json.".into(), true,
             &["anthropic:claude-sonnet-5-5"]),
+        agent("multimedia", "Vídeo y audio", "eye", "#4285f4", OPUS, "medium",
+            "Mira y escucha vídeos, audios e imágenes con Gemini: transcribe, describe, encuentra momentos y analiza el sonido.",
+            &["vídeo", "video", "videos", "vídeos", "clip", "grabación", "grabacion", "audio", "escucha", "transcribe", "transcripción", "transcripcion", "subtítulos", "subtitulos", "mira este", "qué pasa en", "minuto"],
+            "Eres el analista multimedia del equipo. Para ver o escuchar archivos usa la herramienta analizar_medio_gemini (Gemini es el modelo que entiende vídeo y audio). Haz preguntas concretas a Gemini, cita los minutos y resume lo útil para el proyecto.".into(), true,
+            &["anthropic:claude-sonnet-5-5"]),
         agent("revisor", "Revisor", "check", "#8a8a8a", OPUS, "medium",
             "Revisa lo que hicieron otros agentes, detecta incoherencias y resume.",
             &["revisa", "revisar", "review", "comprueba", "resume", "resumen", "audita"],
@@ -117,6 +122,9 @@ pub fn default_agents() -> Vec<Agent> {
         }
         if a.id == "audio" {
             a.mcp = vec!["elevenlabs".into()];
+        }
+        if a.id == "multimedia" {
+            a.mcp = vec!["gemini-media".into()];
         }
     }
     v
