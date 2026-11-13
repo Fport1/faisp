@@ -731,6 +731,7 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/oauth/callback", get(oauth_callback))
         .route("/api/cli/codex/status", get(codex_status))
         .route("/api/claude/limits", get(claude_limits_get))
+        .route("/api/limits", get(all_limits))
         .route("/api/claude/limits/refresh", post(claude_limits_refresh))
         .route("/api/cli/codex/login", post(codex_login))
         .route("/api/cli/codex/install", post(codex_install))
@@ -932,4 +933,70 @@ async fn claude_limits_refresh(State(st): St) -> ApiResult {
         Ok(Err(e)) => Err(bad(e)),
         Err(_) => Err(bad("Tiempo agotado")),
     }
+}
+
+
+// ---------------- Uso y límites de todas las IAs ----------------
+
+async fn account_info(http: &reqwest::Client, id: &str, key: &str) -> Option<Value> {
+    let t = std::time::Duration::from_secs(8);
+    match id {
+        "openrouter" => {
+            let v: Value = http.get("https://openrouter.ai/api/v1/key").bearer_auth(key).timeout(t).send().await.ok()?.json().await.ok()?;
+            let d = &v["data"];
+            Some(json!({"kind": "credits", "used": d["usage"], "limit": d["limit"], "remaining": d["limit_remaining"], "free": d["is_free_tier"]}))
+        }
+        "elevenlabs" => {
+            let v: Value = http.get("https://api.elevenlabs.io/v1/user/subscription").header("xi-api-key", key).timeout(t).send().await.ok()?.json().await.ok()?;
+            Some(json!({"kind": "characters", "used": v["character_count"], "limit": v["character_limit"], "resetsAt": v["next_character_count_reset_unix"], "tier": v["tier"]}))
+        }
+        _ => None,
+    }
+}
+
+async fn all_limits(State(st): St) -> ApiResult {
+    let cfg = st.cfg.read().unwrap().clone();
+    // Consumo de faisp por proveedor (7 días y 30 días)
+    let (week, month) = {
+        let db = st.db.lock().unwrap();
+        let now = chrono::Utc::now();
+        let w = (now - chrono::Duration::days(7)).to_rfc3339();
+        let m = (now - chrono::Duration::days(30)).to_rfc3339();
+        let mut week: BTreeMap<String, (u64, f64, usize)> = BTreeMap::new();
+        let mut month: BTreeMap<String, (u64, f64, usize)> = BTreeMap::new();
+        for u in db.usage.iter().filter(|u| !u.demo && u.ts >= m) {
+            let t = u.tokens.input + u.tokens.output + u.tokens.cache_read + u.tokens.cache_write;
+            let e = month.entry(u.provider.clone()).or_default();
+            e.0 += t;
+            e.1 += u.cost;
+            e.2 += 1;
+            if u.ts >= w {
+                let e = week.entry(u.provider.clone()).or_default();
+                e.0 += t;
+                e.1 += u.cost;
+                e.2 += 1;
+            }
+        }
+        (week, month)
+    };
+    let mut providers = serde_json::Map::new();
+    let api_limits = crate::providers::provider_limits();
+    for (id, p) in &cfg.providers {
+        if p.kind == "mock" {
+            continue;
+        }
+        let ready = if p.kind == "elevenlabs" { !p.api_key.is_empty() } else { crate::providers::usable(&st.http, &cfg, &format!("{id}:x")).await };
+        let key = crate::providers::api_key(id, p).unwrap_or_default();
+        let account = if ready && !key.is_empty() { account_info(&st.http, id, &key).await } else { None };
+        let w = week.get(id).cloned().unwrap_or_default();
+        let mo = month.get(id).cloned().unwrap_or_default();
+        providers.insert(id.clone(), json!({
+            "label": p.label, "kind": p.kind, "ready": ready, "free": p.free,
+            "rate": api_limits.get(id).cloned().unwrap_or(Value::Null),
+            "account": account,
+            "week": {"tokens": w.0, "cost": w.1, "calls": w.2},
+            "month": {"tokens": mo.0, "cost": mo.1, "calls": mo.2},
+        }));
+    }
+    Ok(Json(json!({"claude": crate::providers::claude_limits(), "providers": providers})))
 }

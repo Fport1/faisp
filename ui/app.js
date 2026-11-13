@@ -109,6 +109,7 @@ const md = text => DOMPurify.sanitize(marked.parse(text || ''), { ADD_ATTR: ['ta
 // ---------- Estado global ----------
 async function loadState() {
   S.st = await api('GET', '/api/state');
+  api('GET', '/api/claude/limits').then(l => { S.limits = l; if (S.view === 'chat') drawLimitBanner(); }).catch(() => {});
   const projects = S.st.projects;
   if (!projects.some(p => p.id === S.projectId)) S.projectId = projects.find(p => p.path)?.id || projects[0]?.id || null;
   renderSidebar();
@@ -238,14 +239,37 @@ function renderChat() {
     v.innerHTML = `<div class="home"><div class="greet"><img src="/icon.svg" alt=""><span>${greet}${p ? ', ¿qué hacemos en <i>' + esc(p.name) + '</i>?' : ''}</span></div><div id="homeComposer" style="width:100%;display:flex;justify-content:center"></div>
       <div class="suggest">${suggestions().map(s => `<button data-sug="${esc(s)}">${esc(s)}</button>`).join('')}</div></div>`;
     $('#homeComposer').appendChild(composer());
+    drawLimitBanner();
     $$('[data-sug]').forEach(b => b.onclick = () => { const ta = $('#prompt'); ta.value = b.dataset.sug; ta.focus(); autosize(ta); });
     $('#prompt')?.focus();
     return;
   }
   v.innerHTML = `<div class="thread" id="thread">${S.chat.messages.map(renderMessage).join('')}</div>`;
   $('#composerWrap').appendChild(composer());
+  drawLimitBanner();
   $('#composerWrap').insertAdjacentHTML('beforeend', '<div class="hint">El orquestador reparte la tarea entre agentes. Revisa los cambios antes de aplicarlos.</div>');
   v.scrollTop = v.scrollHeight;
+}
+
+function drawLimitBanner() {
+  $$('.limit-banner').forEach(e => e.remove());
+  const info = S.limits?.info; if (!info) return;
+  const w = info.unifiedWindows || {};
+  const hot = Object.entries(w).filter(([, v]) => (v.utilization || 0) >= 0.7).sort((a, b) => b[1].utilization - a[1].utilization)[0];
+  if (info.status !== 'rejected' && info.status !== 'allowed_warning' && !hot) return;
+  const type = hot ? hot[0] : info.rateLimitType, win = hot ? hot[1] : info;
+  const key = type + ':' + win.resetsAt;
+  if (store.get('limitBannerHidden', '') === key) return;
+  const what = type === 'five_hour' ? 'de la sesión' : 'semanal';
+  const d = win.resetsAt ? new Date(win.resetsAt * 1000) : null;
+  const when = d ? d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '';
+  const html = `<div class="limit-banner ${info.status === 'rejected' ? 'bad' : ''}">${ico('clock', 15)}<b>${info.status === 'rejected' ? 'Has alcanzado el límite de uso ' + what : 'Acercándose al límite de uso ' + what}</b><span class="muted">${when ? 'Se restablece el ' + when : ''} · ${Math.round((win.utilization || 0) * 100)} %</span><span style="flex:1"></span><button class="btn sm" data-lb="usage">Ver uso</button><button class="icon-btn" data-lb="x" title="Ocultar">${ico('x', 14)}</button></div>`;
+  const host = $('#homeComposer') || $('#composerWrap');
+  if (!host) return;
+  host.insertAdjacentHTML('afterbegin', html);
+  const b = $('.limit-banner');
+  $('[data-lb=usage]', b).onclick = () => { S.view = 'settings'; S.settingsTab = 'usage'; renderSidebar(); render(); };
+  $('[data-lb=x]', b).onclick = () => { store.set('limitBannerHidden', key); b.remove(); };
 }
 
 function suggestions() {
@@ -484,7 +508,7 @@ document.addEventListener('click', async e => {
     return;
   }
   const ap = e.target.closest('[data-allow]');
-  if (ap) { const card = ap.closest('[data-ap]'); $('button', card).forEach(x => x.disabled = true); api('POST', `/api/approvals/${encodeURIComponent(card.dataset.ap)}`, { allow: ap.dataset.allow === '1' }).catch(err => toast(err.message)); return; }
+  if (ap) { const card = ap.closest('[data-ap]'); $$('button', card).forEach(x => x.disabled = true); api('POST', `/api/approvals/${encodeURIComponent(card.dataset.ap)}`, { allow: ap.dataset.allow === '1' }).catch(err => toast(err.message)); return; }
   const art = e.target.closest('[data-art]');
   if (art) openArtifact(art.dataset.art);
 });
@@ -653,7 +677,7 @@ function editAgent(id) {
       { label: 'Cancelar' },
       { label: 'Guardar', cls: 'primary', run: async o => {
         const n = { ...a, id: id || $('#ai', o).value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-'), name: $('#an', o).value, icon: $('#aic button.on', o)?.dataset.ic || a.icon, model: $('#am', o).value.trim(), effort: $('#ae', o).value, color: $('#aco', o).value,
-          description: $('#ad', o).value, keywords: $('#ak', o).value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean), system: $('#as', o).value, tools: $('#at', o).checked, preferFree: $('#apf', o).checked, webSearch: $('#aw', o).value === '1', fallbacks: $('#af', o).value.split('\n').map(s => s.trim()).filter(Boolean), mcp: $('.amcp:checked', o).map(c => c.value), disabled: $('#ax', o).checked };
+          description: $('#ad', o).value, keywords: $('#ak', o).value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean), system: $('#as', o).value, tools: $('#at', o).checked, preferFree: $('#apf', o).checked, webSearch: $('#aw', o).value === '1', fallbacks: $('#af', o).value.split('\n').map(s => s.trim()).filter(Boolean), mcp: $$('.amcp:checked', o).map(c => c.value), disabled: $('#ax', o).checked };
         if (!n.id || !n.name) throw new Error('ID y nombre son obligatorios');
         const list = id ? cfgAgents.map(x => x.id === id ? n : x) : [...cfgAgents, n];
         await api('PUT', '/api/agents', list); await loadState(); render();
@@ -830,36 +854,85 @@ function limitsHtml(l) {
 }
 
 async function setUsage(body) {
-  const [w, u] = await Promise.all([api('GET', '/api/usage/windows'), api('GET', '/api/usage')]);
-  const resets = w.sessionResetsAt ? new Date(w.sessionResetsAt) : null;
-  const bar = (label, sub, val, max, unit) => `<div class="ubar"><div class="row"><b>${label}</b><span class="muted" style="font-size:13px">${sub}</span><span style="flex:1"></span><span class="mono">${unit}</span></div><div class="track"><div style="width:${pct(val, max)}%"></div></div></div>`;
-  const maxTok = Math.max(w.week.subscription.tokens, w.week.api.tokens, 1);
-  const lim = await api('GET', '/api/claude/limits').catch(() => null);
-  body.innerHTML = `<section class="block"><div class="row"><h2 style="margin:0;flex:1">Límites de tu plan de Claude</h2><button class="btn sm" id="limRefresh">${ico('refresh', 13)} Actualizar</button></div><p>Los mismos datos que muestra Claude en Ajustes → Uso: los devuelve tu Claude Code en cada respuesta.</p><div id="limBox">${limitsHtml(lim)}</div></section>
-    <section class="block"><h2>Consumo de faisp</h2><p>Lo que han gastado los agentes de faisp en cada ventana.</p>
-      ${bar('Sesión actual', resets ? 'se reinicia ' + resets.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : 'ventana de 5 h', w.session.subscription.tokens, maxTok, fmtTok(w.session.subscription.tokens) + ' tok · ' + w.session.subscription.calls + ' llamadas')}
-      ${bar('Semana · suscripción de Claude', 'últimos 7 días', w.week.subscription.tokens, maxTok, fmtTok(w.week.subscription.tokens) + ' tok')}
-      ${bar('Semana · APIs', fmtUsd(w.week.api.cost), w.week.api.tokens, maxTok, fmtTok(w.week.api.tokens) + ' tok')}</section>
-    <section class="block"><h2>Este mes</h2><div class="stats">
-      <div class="stat"><div class="k">Gasto en APIs</div><div class="v">${fmtUsd(u.totals.monthSpend)}</div></div>
-      <div class="stat"><div class="k">Entrada</div><div class="v">${fmtTok(u.totals.input)}</div></div>
-      <div class="stat"><div class="k">Salida</div><div class="v">${fmtTok(u.totals.output)}</div></div>
-      <div class="stat"><div class="k">Ahorro por caché</div><div class="v" style="color:var(--ok)">${fmtUsd(u.totals.cacheSaved)}</div></div></div>
+  body.innerHTML = `<section class="block"><div class="row"><h2 style="margin:0;flex:1">Tu plan de Claude</h2><span class="muted" style="font-size:12.5px" id="limState"></span><button class="btn sm" id="limRefresh">${ico('refresh', 13)} Actualizar</button></div>
+      <p>Los mismos datos que muestra Claude en Ajustes → Uso. Se actualizan solos mientras tienes esta pantalla abierta.</p><div id="limBox"><div class="muted">Cargando…</div></div></section>
+    <section class="block"><div class="row"><h2 style="margin:0;flex:1">Otras IAs</h2></div><p>Límites de cada API (los que devuelven en sus respuestas), créditos o plan de la cuenta cuando el servicio lo publica, y lo que ha gastado faisp con cada una.</p><div id="provBox"><div class="muted">Cargando…</div></div></section>
+    <section class="block"><h2>Este mes en faisp</h2><div class="stats" id="monthBox"></div>
       <button class="btn" id="more">${ico('chart', 14)} Ver el detalle por agente, modelo y proyecto</button></section>`;
   $('#more', body).onclick = () => { S.view = 'usage'; renderSidebar(); render(); };
-  $('#limRefresh', body).onclick = async e => {
-    const b = e.currentTarget; b.disabled = true; b.innerHTML = ico('refresh', 13) + ' Consultando…';
-    try { $('#limBox', body).innerHTML = limitsHtml(await api('POST', '/api/claude/limits/refresh')); toast('Límites actualizados'); }
-    catch (err) { toast('No se pudo: ' + err.message.slice(0, 120)); }
-    b.disabled = false; b.innerHTML = ico('refresh', 13) + ' Actualizar';
+
+  const alive = () => S.view === 'settings' && S.settingsTab === 'usage' && document.body.contains(body);
+  const drawClaude = l => { S.limits = l; const b = $('#limBox', body); if (b) b.innerHTML = limitsHtml(l); };
+  const refreshClaude = async (silent) => {
+    const btn = $('#limRefresh', body), st = $('#limState', body);
+    if (!btn || btn.disabled) return;
+    btn.disabled = true; if (st) st.textContent = 'Consultando…';
+    try { drawClaude(await api('POST', '/api/claude/limits/refresh')); if (!silent) toast('Límites actualizados'); }
+    catch (err) { if (!silent) toast('No se pudo: ' + err.message.slice(0, 120)); }
+    btn.disabled = false; if (st) st.textContent = '';
   };
-  // Refresco automático (sin gastar tokens): relee lo último que envió Claude Code y el consumo
+  $('#limRefresh', body).onclick = () => refreshClaude(false);
+
+  const drawProviders = d => {
+    const box = $('#provBox', body); if (!box) return;
+    const list = Object.entries(d.providers || {}).filter(([id, p]) => id !== 'claude' && (p.ready || p.month.calls));
+    const off = Object.entries(d.providers || {}).filter(([id, p]) => id !== 'claude' && !p.ready && !p.month.calls).map(([, p]) => p.label);
+    box.innerHTML = (list.length ? list.map(([id, p]) => providerUsageCard(id, p)).join('') : '<div class="muted">Ninguna configurada todavía. Añade claves en Ajustes → Modelos o conecta servicios en Conectores.</div>')
+      + (off.length ? `<div class="muted" style="font-size:12.5px;margin-top:10px">Sin configurar: ${off.map(esc).join(', ')}</div>` : '');
+    $$('[data-check]', box).forEach(b => b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Comprobando…';
+      const r = await api('POST', `/api/providers/${encodeURIComponent(b.dataset.check)}/test`, {}).catch(e => ({ ok: false, error: e.message }));
+      if (!r.ok) toast(r.error || 'Error');
+      drawProviders(await api('GET', '/api/limits'));
+    });
+  };
+  const loadAll = async () => {
+    const [d, u] = await Promise.all([api('GET', '/api/limits').catch(() => ({})), api('GET', '/api/usage').catch(() => null)]);
+    if (!alive()) return null;
+    drawClaude(d.claude); drawProviders(d);
+    if (u) $('#monthBox', body).innerHTML = `<div class="stat"><div class="k">Gasto en APIs</div><div class="v">${fmtUsd(u.totals.monthSpend)}</div></div><div class="stat"><div class="k">Entrada</div><div class="v">${fmtTok(u.totals.input)}</div></div><div class="stat"><div class="k">Salida</div><div class="v">${fmtTok(u.totals.output)}</div></div><div class="stat"><div class="k">Ahorro por caché</div><div class="v" style="color:var(--ok)">${fmtUsd(u.totals.cacheSaved)}</div></div>`;
+    return d;
+  };
+  const d = await loadAll();
+  // Al abrir: si los datos de Claude tienen más de 2 min (o no hay), se piden solos.
+  const stale = l => !l || !l.checkedAt || Date.now() / 1000 - l.checkedAt > 120;
+  if (d && S.st.providerReady.claude && stale(d.claude)) refreshClaude(true);
   clearInterval(S.usageTimer);
+  let tick = 0;
   S.usageTimer = setInterval(async () => {
-    if (S.view !== 'settings' || S.settingsTab !== 'usage' || !document.body.contains(body)) return clearInterval(S.usageTimer);
-    const l = await api('GET', '/api/claude/limits').catch(() => null);
-    const box = $('#limBox', body); if (box) box.innerHTML = limitsHtml(l);
-  }, 20000);
+    if (!alive()) return clearInterval(S.usageTimer);
+    if (document.visibilityState !== 'visible') return;
+    tick++;
+    const dd = await loadAll(); // cada 15 s: lo último registrado (sin gastar tokens)
+    if (dd && tick % 8 === 0 && S.st.providerReady.claude && stale(dd.claude)) refreshClaude(true); // cada 2 min: consulta mínima
+  }, 15000);
+}
+
+function providerUsageCard(id, p) {
+  const rows = [];
+  const rate = p.rate && typeof p.rate === 'object' ? p.rate : null;
+  const names = { requests: 'Peticiones', tokens: 'Tokens', 'input-tokens': 'Tokens de entrada', 'output-tokens': 'Tokens de salida' };
+  if (rate) for (const k of ['requests', 'tokens', 'input-tokens', 'output-tokens']) {
+    const r = rate[k]; if (!r || !r.limit) continue;
+    const used = Math.max(0, Math.round((1 - r.remaining / r.limit) * 100));
+    rows.push(`<div class="ubar sm"><div class="row"><span>${names[k]}</span><span class="muted" style="font-size:12px">${r.reset ? 'reinicio ' + esc(fmtRateReset(r.reset)) : ''}</span><span style="flex:1"></span><span class="mono">${fmtN(r.remaining)} / ${fmtN(r.limit)} libres</span></div><div class="track"><div style="width:${used}%"></div></div></div>`);
+  }
+  const a = p.account;
+  if (a && a.kind === 'credits') {
+    const limit = a.limit == null ? null : +a.limit;
+    rows.push(`<div class="ubar sm"><div class="row"><span>Créditos${a.free ? ' · nivel gratuito' : ''}</span><span style="flex:1"></span><span class="mono">${fmtUsd(+a.used || 0)} usados${limit ? ' de ' + fmtUsd(limit) : ' (sin límite)'}</span></div>${limit ? `<div class="track"><div style="width:${pct(+a.used, limit)}%"></div></div>` : ''}</div>`);
+  }
+  if (a && a.kind === 'characters') {
+    rows.push(`<div class="ubar sm"><div class="row"><span>Caracteres del plan${a.tier ? ' · ' + esc(a.tier) : ''}</span><span class="muted" style="font-size:12px">${a.resetsAt ? fmtReset(a.resetsAt) : ''}</span><span style="flex:1"></span><span class="mono">${fmtN(a.used)} / ${fmtN(a.limit)}</span></div><div class="track"><div style="width:${pct(+a.used, +a.limit)}%"></div></div></div>`);
+  }
+  if (!rows.length) rows.push(`<div class="muted" style="font-size:12.5px">${p.kind === 'codex-cli' ? 'Codex CLI no informa de los límites de tu plan de ChatGPT.' : p.kind === 'openai' && ['gemini'].includes(id) ? 'Gemini no devuelve sus límites en las respuestas; consúltalos en AI Studio.' : 'Aún no hay datos de límites: aparecerán al usarlo o con «Comprobar».'}</div>`);
+  return `<div class="card pu"><div class="row" style="margin-bottom:8px"><span class="dot ${p.ready ? 'on' : ''}"></span><b>${esc(p.label)}</b>${p.free ? `<span class="chip eco">${ico('zap', 11)} gratis</span>` : ''}<span style="flex:1"></span>
+      <span class="muted" style="font-size:12.5px">7 días: ${fmtTok(p.week.tokens)} tok${p.week.cost ? ' · ' + fmtUsd(p.week.cost) : ''} · ${p.week.calls} llamadas</span>${p.ready && p.kind !== 'elevenlabs' ? `<button class="btn sm" data-check="${esc(id)}">Comprobar</button>` : ''}</div>${rows.join('')}</div>`;
+}
+
+function fmtRateReset(r) {
+  if (/^\d{4}-\d\d-\d\d/.test(r)) { const d = new Date(r); const s = Math.max(0, Math.round((d - Date.now()) / 1000)); return s < 120 ? `en ${s} s` : `en ${Math.round(s / 60)} min`; }
+  return 'en ' + r;
 }
 
 function setModels(body, cfg, save) {
@@ -894,8 +967,8 @@ function setModels(body, cfg, save) {
       ${p.type === 'claude-code' ? '<label>Sesión<input type="text" disabled value="En Ajustes → Cuenta"></label>' : `<label>API key ${p.noKeyNeeded ? '(no necesaria)' : ''}<input type="password" data-pf="${esc(id)}.apiKey" value="${esc(p.apiKey)}" placeholder="${p.noKeyNeeded ? 'local' : 'pega tu clave'}" autocomplete="off"></label>`}</div></div>`).join('');
     $$('[data-rmp]').forEach(b => b.onclick = () => { if (confirm('¿Quitar proveedor?')) { delete cfg.providers[b.dataset.rmp]; drawProvs(); } });
     $$('[data-pf]').forEach(inp => inp.onchange = () => { const [id, f] = inp.dataset.pf.split('.'); cfg.providers[id][f] = inp.value; });
-    $('[data-ptest]').forEach(b => b.onclick = () => testProvider(b.dataset.ptest));
-    $('[data-models]').forEach(b => b.onclick = async () => {
+    $$('[data-ptest]').forEach(b => b.onclick = () => testProvider(b.dataset.ptest));
+    $$('[data-models]').forEach(b => b.onclick = async () => {
       const id = b.dataset.models, out = $(`[data-mo="${CSS.escape(id)}"]`);
       out.innerHTML = '<div class="muted" style="font-size:12.5px">Consultando… (guarda antes si acabas de pegar la clave)</div>';
       try {
@@ -1060,6 +1133,11 @@ addEventListener('focus', () => {
 
 (async function init() {
   $$('[data-i]').forEach(e => e.insertAdjacentHTML('afterbegin', ico(e.dataset.i, +e.dataset.s || 17)));
+  $$('#sidebar .nav-item').forEach(b => { const l = $('.label', b); if (l && !b.title) b.title = l.textContent; });
+  const toggleSide = () => { document.body.classList.toggle('collapsed'); store.set('collapsed', document.body.classList.contains('collapsed') ? '1' : '0'); syncOpenSide(); $('#toggleSide').title = document.body.classList.contains('collapsed') ? 'Abrir barra lateral (Ctrl+B)' : 'Contraer barra lateral (Ctrl+B)'; };
+  $('#toggleSide').onclick = toggleSide;
+  $('.brand img').onclick = () => { if (document.body.classList.contains('collapsed')) toggleSide(); };
+  addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSide(); } });
   if (document.documentElement.classList.contains('pre-collapsed')) document.body.classList.add('collapsed');
   syncOpenSide(); addEventListener('resize', syncOpenSide);
   const ping = () => fetch('/api/ping', { method: 'POST' }).catch(() => {});

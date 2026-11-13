@@ -36,6 +36,33 @@ fn set_claude_limits(info: &Value) {
     let _ = std::fs::write(limits_file(), v.to_string());
 }
 
+/// Límites de cada API, leídos de las cabeceras de sus respuestas (x-ratelimit-* / anthropic-ratelimit-*).
+static PROVIDER_LIMITS: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<String, Value>>> = std::sync::OnceLock::new();
+
+fn capture_limits(pid: &str, h: &reqwest::header::HeaderMap) {
+    let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).map(String::from);
+    let mut out = serde_json::Map::new();
+    for kind in ["requests", "tokens", "input-tokens", "output-tokens"] {
+        let (limit, remaining, reset) = if h.contains_key(format!("anthropic-ratelimit-{kind}-limit").as_str()) {
+            (get(&format!("anthropic-ratelimit-{kind}-limit")), get(&format!("anthropic-ratelimit-{kind}-remaining")), get(&format!("anthropic-ratelimit-{kind}-reset")))
+        } else {
+            (get(&format!("x-ratelimit-limit-{kind}")), get(&format!("x-ratelimit-remaining-{kind}")), get(&format!("x-ratelimit-reset-{kind}")))
+        };
+        if let (Some(l), Some(r)) = (limit, remaining) {
+            out.insert(kind.into(), json!({"limit": l.parse::<f64>().unwrap_or(0.0), "remaining": r.parse::<f64>().unwrap_or(0.0), "reset": reset}));
+        }
+    }
+    if out.is_empty() {
+        return;
+    }
+    out.insert("checkedAt".into(), json!(chrono::Utc::now().timestamp()));
+    PROVIDER_LIMITS.get_or_init(Default::default).lock().unwrap().insert(pid.to_string(), Value::Object(out));
+}
+
+pub fn provider_limits() -> Value {
+    json!(PROVIDER_LIMITS.get_or_init(Default::default).lock().unwrap().clone())
+}
+
 pub type ToolExec = Arc<dyn Fn(String, Value) -> BoxFuture<'static, String> + Send + Sync>;
 
 #[derive(Clone, Default)]
@@ -118,7 +145,7 @@ async fn local_reachable(http: &reqwest::Client, base: &str) -> bool {
     ok
 }
 
-async fn usable(http: &reqwest::Client, cfg: &Config, model_ref: &str) -> bool {
+pub async fn usable(http: &reqwest::Client, cfg: &Config, model_ref: &str) -> bool {
     let pid = parse_model_ref(model_ref).0;
     match cfg.providers.get(&pid) {
         Some(p) if p.kind == "claude-code" => crate::integrations::find_claude_code(&p.base_url).is_some(),
@@ -244,11 +271,12 @@ pub async fn stream_chat(http: &reqwest::Client, cfg: &Config, req: LlmRequest, 
     }
 }
 
-async fn send_with_retry(rb: impl Fn() -> reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
+async fn send_with_retry(pid: &str, rb: impl Fn() -> reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
     let mut wait = 2;
     for attempt in 0..3 {
         let res = rb().send().await?;
         let s = res.status().as_u16();
+        capture_limits(pid, res.headers());
         if res.status().is_success() {
             return Ok(res);
         }
@@ -353,7 +381,7 @@ async fn anthropic(http: &reqwest::Client, pid: &str, p: &Provider, model: &str,
         if fallback {
             body["fallbacks"] = json!("default");
         }
-        let res = send_with_retry(|| {
+        let res = send_with_retry(pid, || {
             let mut rb = http.post(&url).header("x-api-key", &key).header("anthropic-version", "2023-06-01").header("content-type", "application/json");
             if fallback {
                 rb = rb.header("anthropic-beta", "server-side-fallback-2026-07-01");
@@ -528,7 +556,7 @@ async fn openai(http: &reqwest::Client, pid: &str, p: &Provider, model: &str, re
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
-        let res = send_with_retry(|| {
+        let res = send_with_retry(pid, || {
             let mut rb = http.post(&url).header("content-type", "application/json");
             if !key.is_empty() {
                 rb = rb.bearer_auth(&key);
@@ -877,7 +905,7 @@ async fn responses(http: &reqwest::Client, pid: &str, p: &Provider, model: &str,
     input.extend(req.messages.iter().map(|(r, c)| json!({"role": r, "content": c})));
     let body = json!({"model": model, "input": input, "tools": [{"type": "web_search"}]});
     sink.tool("web_search", &json!({"proveedor": p.label}));
-    let res = send_with_retry(|| {
+    let res = send_with_retry(pid, || {
         let mut rb = http.post(&url).header("content-type", "application/json");
         if !key.is_empty() {
             rb = rb.bearer_auth(&key);

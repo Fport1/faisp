@@ -312,3 +312,26 @@ svg.i { flex: none; vertical-align: -0.18em; }
 @media (max-width: 1000px) { .set-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; } .set-nav { flex-direction: row; overflow-x: auto; position: static; } .set-nav button span { white-space: nowrap; } }
 
 .test.warnbox { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+
+/* ---------- v5: barra lateral contraída (franja de iconos, como Claude) ---------- */
+body.collapsed #sidebar { width: 56px; }
+body.collapsed .brand { flex-direction: column; gap: 6px; padding: 12px 0 6px; align-items: center; }
+body.collapsed .brand img { cursor: pointer; }
+body.collapsed .brand .icon-btn { margin: 0; width: 36px; height: 36px; }
+body.collapsed .side-nav { align-items: center; padding: 4px 0; }
+body.collapsed .nav-item { width: 40px; height: 40px; padding: 0; justify-content: center; }
+body.collapsed .nav-item.primary .ico { margin: 0; }
+body.collapsed .proj-switch { margin: 8px auto 0; }
+body.collapsed .proj-switch .nav-item { width: 40px; }
+body.collapsed .side-foot { flex-direction: column; padding: 10px 0; gap: 6px; border-top: 0; margin-top: auto; }
+body.collapsed .recents { flex: 1; }
+#toggleSide { width: 34px; height: 34px; }
+/* ---------- aviso de límite ---------- */
+.limit-banner { display: flex; align-items: center; gap: 10px; max-width: 780px; width: 100%; margin: 0 auto 10px; padding: 9px 12px 9px 14px; border: 1px solid var(--line2); background: var(--card); border-radius: 14px; font-size: 13.5px; }
+.limit-banner.bad { border-color: var(--err); }
+.limit-banner .muted { font-size: 13px; }
+#homeComposer { flex-direction: column; align-items: center; }
+.ubar.sm { margin-bottom: 10px; font-size: 13.5px; }
+.ubar.sm .track { height: 6px; margin-top: 5px; }
+.card.pu { padding: 12px 14px; margin-bottom: 10px; }
+.home .limit-banner { max-width: 680px; }
