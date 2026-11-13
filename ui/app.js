@@ -791,10 +791,42 @@ async function setAccount(body, cfg, save) {
     $('#cxi', box)?.addEventListener('click', async () => { if (!confirm('Se abrirá una consola que ejecuta: npm install -g @openai/codex (paquete oficial de OpenAI). ¿Continuar?')) return; await api('POST', '/api/cli/codex/install'); toast('Instalando en la consola; vuelve aquí al terminar'); });
     $('#cxl', box)?.addEventListener('click', async () => { await api('POST', '/api/cli/codex/login'); toast('Sigue los pasos en el navegador'); });
   }).catch(() => {});
-  $('#li', body)?.addEventListener('click', async () => { await api('POST', '/api/account/login'); toast('Se abrió una ventana: sigue los pasos y vuelve aquí'); setTimeout(() => setAccount(body, cfg, save), 15000); });
+  $('#li', body)?.addEventListener('click', async () => {
+    await api('POST', '/api/account/login');
+    toast('Se abrió una ventana: sigue los pasos; esto se actualiza solo');
+    const box = $('.acct', body); if (box) box.insertAdjacentHTML('beforeend', '<div class="muted" style="font-size:12.5px;margin-top:8px">Esperando a que inicies sesión…</div>');
+    clearInterval(S.loginTimer);
+    let n = 0;
+    S.loginTimer = setInterval(async () => {
+      if (++n > 90 || S.view !== 'settings' || S.settingsTab !== 'account') return clearInterval(S.loginTimer);
+      const a = await api('GET', '/api/account').catch(() => null);
+      if (a?.status?.loggedIn && !a.expired) { clearInterval(S.loginTimer); toast('Sesión iniciada'); setAccount(body, cfg, save); }
+    }, 3000);
+  });
   $('#lo', body)?.addEventListener('click', async () => { if (!confirm('¿Cerrar la sesión de Claude Code en este PC?')) return; await api('POST', '/api/account/logout'); setAccount(body, cfg, save); });
   $('#sv', body).onclick = async () => { cfg.routing.useSubscription = $('#us').checked; cfg.license = { plan: $('#lplan').value, key: $('#lkey').value, email: $('#lmail').value }; await save(); };
   $('#us', body).onchange = async e => { cfg.routing.useSubscription = e.target.checked; await save(e.target.checked ? 'Se usará tu suscripción primero' : 'Suscripción desactivada'); };
+}
+
+const WINDOW_NAMES = { five_hour: 'Sesión actual', seven_day: 'Semana · todos los modelos', seven_day_opus: 'Semana · Opus', seven_day_sonnet: 'Semana · Sonnet', seven_day_oauth_apps: 'Semana · apps' };
+function fmtReset(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000), diff = d - Date.now();
+  if (diff <= 0) return 'reiniciado';
+  const h = Math.floor(diff / 3.6e6), m = Math.round((diff % 3.6e6) / 6e4);
+  if (h < 24) return `se reinicia en ${h ? h + ' h ' : ''}${m} min`;
+  return 'se reinicia el ' + d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric' }) + ' a las ' + d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+}
+function limitsHtml(l) {
+  if (!l || !l.info) return '<p class="muted">Aún no hay datos. Pulsa «Actualizar» (hace una consulta mínima con Haiku) o usa cualquier agente con tu suscripción.</p>';
+  const info = l.info, wins = info.unifiedWindows || {};
+  const entries = Object.keys(wins).length ? Object.entries(wins) : [[info.rateLimitType || 'five_hour', { utilization: info.utilization, resetsAt: info.resetsAt }]];
+  const order = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet'];
+  entries.sort((a, b) => (order.indexOf(a[0]) + 99) % 99 - (order.indexOf(b[0]) + 99) % 99);
+  const warn = { allowed_warning: 'Te acercas al límite', rejected: 'Límite alcanzado' }[info.status];
+  return `${warn ? `<div class="test ${info.status === 'rejected' ? 'bad' : 'warnbox'}">${ico('alert', 13)} ${warn}${info.status === 'rejected' && info.resetsAt ? ' · ' + fmtReset(info.resetsAt) : ''}</div>` : ''}
+    ${entries.map(([k, w]) => { const p = Math.round((w.utilization || 0) * 100); return `<div class="ubar"><div class="row"><b>${esc(WINDOW_NAMES[k] || k)}</b><span class="muted" style="font-size:13px">${fmtReset(w.resetsAt)}</span><span style="flex:1"></span><span class="mono">${p} % usado</span></div><div class="track"><div style="width:${p}%;${p >= 90 ? 'background:var(--err)' : p >= 70 ? 'background:var(--warn)' : ''}"></div></div></div>`; }).join('')}
+    <div class="muted" style="font-size:12.5px">Actualizado ${ago(new Date(l.checkedAt * 1000))}${info.overageEnabled ? ' · uso adicional activado' : ''}</div>`;
 }
 
 async function setUsage(body) {
@@ -802,7 +834,9 @@ async function setUsage(body) {
   const resets = w.sessionResetsAt ? new Date(w.sessionResetsAt) : null;
   const bar = (label, sub, val, max, unit) => `<div class="ubar"><div class="row"><b>${label}</b><span class="muted" style="font-size:13px">${sub}</span><span style="flex:1"></span><span class="mono">${unit}</span></div><div class="track"><div style="width:${pct(val, max)}%"></div></div></div>`;
   const maxTok = Math.max(w.week.subscription.tokens, w.week.api.tokens, 1);
-  body.innerHTML = `<section class="block"><h2>Límites de uso</h2><p>Consumo registrado por faisp. Los límites exactos de tu plan solo los muestra Claude; aquí ves cuánto lleva faisp en cada ventana.</p>
+  const lim = await api('GET', '/api/claude/limits').catch(() => null);
+  body.innerHTML = `<section class="block"><div class="row"><h2 style="margin:0;flex:1">Límites de tu plan de Claude</h2><button class="btn sm" id="limRefresh">${ico('refresh', 13)} Actualizar</button></div><p>Los mismos datos que muestra Claude en Ajustes → Uso: los devuelve tu Claude Code en cada respuesta.</p><div id="limBox">${limitsHtml(lim)}</div></section>
+    <section class="block"><h2>Consumo de faisp</h2><p>Lo que han gastado los agentes de faisp en cada ventana.</p>
       ${bar('Sesión actual', resets ? 'se reinicia ' + resets.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : 'ventana de 5 h', w.session.subscription.tokens, maxTok, fmtTok(w.session.subscription.tokens) + ' tok · ' + w.session.subscription.calls + ' llamadas')}
       ${bar('Semana · suscripción de Claude', 'últimos 7 días', w.week.subscription.tokens, maxTok, fmtTok(w.week.subscription.tokens) + ' tok')}
       ${bar('Semana · APIs', fmtUsd(w.week.api.cost), w.week.api.tokens, maxTok, fmtTok(w.week.api.tokens) + ' tok')}</section>
@@ -813,6 +847,19 @@ async function setUsage(body) {
       <div class="stat"><div class="k">Ahorro por caché</div><div class="v" style="color:var(--ok)">${fmtUsd(u.totals.cacheSaved)}</div></div></div>
       <button class="btn" id="more">${ico('chart', 14)} Ver el detalle por agente, modelo y proyecto</button></section>`;
   $('#more', body).onclick = () => { S.view = 'usage'; renderSidebar(); render(); };
+  $('#limRefresh', body).onclick = async e => {
+    const b = e.currentTarget; b.disabled = true; b.innerHTML = ico('refresh', 13) + ' Consultando…';
+    try { $('#limBox', body).innerHTML = limitsHtml(await api('POST', '/api/claude/limits/refresh')); toast('Límites actualizados'); }
+    catch (err) { toast('No se pudo: ' + err.message.slice(0, 120)); }
+    b.disabled = false; b.innerHTML = ico('refresh', 13) + ' Actualizar';
+  };
+  // Refresco automático (sin gastar tokens): relee lo último que envió Claude Code y el consumo
+  clearInterval(S.usageTimer);
+  S.usageTimer = setInterval(async () => {
+    if (S.view !== 'settings' || S.settingsTab !== 'usage' || !document.body.contains(body)) return clearInterval(S.usageTimer);
+    const l = await api('GET', '/api/claude/limits').catch(() => null);
+    const box = $('#limBox', body); if (box) box.innerHTML = limitsHtml(l);
+  }, 20000);
 }
 
 function setModels(body, cfg, save) {
@@ -1007,6 +1054,10 @@ function setBudget(body, cfg, save) {
 }
 
 // ---------- Arranque ----------
+addEventListener('focus', () => {
+  if (S.view === 'settings' && (S.settingsTab === 'account' || S.settingsTab === 'usage')) viewSettings($('#view'));
+});
+
 (async function init() {
   $$('[data-i]').forEach(e => e.insertAdjacentHTML('afterbegin', ico(e.dataset.i, +e.dataset.s || 17)));
   if (document.documentElement.classList.contains('pre-collapsed')) document.body.classList.add('collapsed');

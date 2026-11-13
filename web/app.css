@@ -310,3 +310,5 @@ svg.i { flex: none; vertical-align: -0.18em; }
 .set-body { min-width: 0; }
 .conn-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
 @media (max-width: 1000px) { .set-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; } .set-nav { flex-direction: row; overflow-x: auto; position: static; } .set-nav button span { white-space: nowrap; } }
+
+.test.warnbox { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }

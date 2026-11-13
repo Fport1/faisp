@@ -730,6 +730,8 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/mcp/{name}/disconnect", post(mcp_disconnect))
         .route("/oauth/callback", get(oauth_callback))
         .route("/api/cli/codex/status", get(codex_status))
+        .route("/api/claude/limits", get(claude_limits_get))
+        .route("/api/claude/limits/refresh", post(claude_limits_refresh))
         .route("/api/cli/codex/login", post(codex_login))
         .route("/api/cli/codex/install", post(codex_install))
 }
@@ -901,4 +903,33 @@ async fn codex_install() -> ApiResult {
     #[cfg(not(windows))]
     std::process::Command::new("npm").args(["install", "-g", "@openai/codex"]).spawn().map_err(bad)?;
     Ok(Json(json!({"ok": true})))
+}
+
+
+// ---------------- Límites del plan de Claude ----------------
+
+async fn claude_limits_get() -> Json<Value> {
+    Json(crate::providers::claude_limits().unwrap_or(Value::Null))
+}
+
+/// Pide a Claude Code una respuesta mínima (Haiku, esfuerzo bajo) solo para leer los límites actuales.
+async fn claude_limits_refresh(State(st): St) -> ApiResult {
+    let cfg = st.cfg.read().unwrap().clone();
+    if !crate::providers::provider_ready(&cfg, "claude") {
+        return Err(bad("Claude Code no está disponible"));
+    }
+    let req = crate::providers::LlmRequest {
+        model_ref: "claude:claude-haiku-5-5".into(),
+        stable: "Responde solo: ok".into(),
+        messages: vec![("user".into(), "ok".into())],
+        max_tokens: 50,
+        effort: "low".into(),
+        ..Default::default()
+    };
+    let sink = Collect(Default::default());
+    match tokio::time::timeout(std::time::Duration::from_secs(90), crate::providers::stream_chat(&st.http, &cfg, req, &sink, None)).await {
+        Ok(Ok(_)) => Ok(Json(crate::providers::claude_limits().unwrap_or(Value::Null))),
+        Ok(Err(e)) => Err(bad(e)),
+        Err(_) => Err(bad("Tiempo agotado")),
+    }
 }

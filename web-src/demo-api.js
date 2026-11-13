@@ -158,7 +158,8 @@
     if (path === '/api/mcp') return json({ servers: [], modpackDetected: false });
     if (path.startsWith('/api/mcp/') || path === '/api/integrations/detect') return fail(desktopOnly);
     if (path.startsWith('/api/approvals/')) return json({ ok: true });
-    if (path.startsWith('/api/providers/') || path.startsWith('/api/cli/')) return fail(desktopOnly);
+    if (path.startsWith('/api/providers/') || path.startsWith('/api/cli/') || path === '/api/claude/limits/refresh') return fail(desktopOnly);
+    if (path === '/api/claude/limits') return json(null);
     return fail('Ruta no disponible en la demo: ' + path);
   }
 

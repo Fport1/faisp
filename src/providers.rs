@@ -17,6 +17,25 @@ pub trait Sink: Send + Sync {
     fn tool(&self, name: &str, input: &Value);
 }
 
+/// Último estado de límites del plan de Claude (lo envía Claude Code en cada respuesta).
+static CLAUDE_LIMITS: std::sync::OnceLock<std::sync::Mutex<Option<Value>>> = std::sync::OnceLock::new();
+
+fn limits_file() -> std::path::PathBuf {
+    crate::store::data_dir().join("claude-limits.json")
+}
+
+pub fn claude_limits() -> Option<Value> {
+    let m = CLAUDE_LIMITS.get_or_init(|| std::sync::Mutex::new(std::fs::read_to_string(limits_file()).ok().and_then(|t| serde_json::from_str(&t).ok())));
+    m.lock().unwrap().clone()
+}
+
+fn set_claude_limits(info: &Value) {
+    let v = json!({"info": info, "checkedAt": chrono::Utc::now().timestamp()});
+    let _ = claude_limits();
+    *CLAUDE_LIMITS.get().unwrap().lock().unwrap() = Some(v.clone());
+    let _ = std::fs::write(limits_file(), v.to_string());
+}
+
 pub type ToolExec = Arc<dyn Fn(String, Value) -> BoxFuture<'static, String> + Send + Sync>;
 
 #[derive(Clone, Default)]
@@ -725,6 +744,7 @@ async fn claude_code(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink
                     }
                 }
             }
+            "rate_limit_event" => set_claude_limits(&ev["rate_limit_info"]),
             "result" => {
                 final_text = ev["result"].as_str().unwrap_or("").to_string();
                 let u = &ev["usage"];
