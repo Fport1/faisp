@@ -26,6 +26,10 @@ pub fn default_providers() -> BTreeMap<String, Provider> {
     let mut cc = provider("Claude (tu suscripción)", "claude-code", "", true, true, "Usa tu cuenta de Claude (Pro/Max) a través de Claude Code instalado en este PC: consume de tu plan, no de la API. Inicia sesión en Ajustes → Cuenta. Uso personal: para distribuirlo comercialmente con login de claude.ai hace falta aprobación de Anthropic.");
     cc.api_key = String::new();
     p.insert("claude".into(), cc);
+    let mut cx = provider("ChatGPT (tu suscripción)", "codex-cli", "", true, true, "Usa tu cuenta de ChatGPT a través de Codex CLI de OpenAI (codex login). Experimental. Instálalo con: npm install -g @openai/codex");
+    cx.api_key = String::new();
+    p.insert("chatgpt".into(), cx);
+    p.insert("elevenlabs".into(), provider("ElevenLabs", "elevenlabs", "https://api.elevenlabs.io", false, false, "Voces, texto a voz, efectos y música. API key en elevenlabs.io → Developers → API Keys."));
     p.insert("anthropic".into(), provider("Anthropic (Claude)", "anthropic", "https://api.anthropic.com", false, false, "Clave en console.anthropic.com. Mejor para código y razonamiento."));
     p.insert("gemini".into(), provider("Google Gemini", "openai", "https://generativelanguage.googleapis.com/v1beta/openai", false, true, "Tier gratuito (gemini-4-hydrogen, gemini-3.8-flash). En el tier gratis Google puede usar los datos para mejorar sus productos. Clave en aistudio.google.com."));
     p.insert("groq".into(), provider("Groq", "openai", "https://api.groq.com/openai/v1", false, true, "Plan gratuito con límites de velocidad. Muy rápido (gpt-oss, Llama). Clave en console.groq.com."));
@@ -93,6 +97,11 @@ pub fn default_agents() -> Vec<Agent> {
             &["busca", "buscar", "investiga", "investigar", "información", "informacion", "internet", "web", "noticias", "actual", "última versión", "ultima version", "documentación", "documentacion", "referencia", "compara", "precio", "fuentes"],
             "Eres el investigador del equipo. Buscas en la web, contrastas fuentes y devuelves hechos concretos con sus enlaces. Si algo no lo puedes verificar, dilo. Resume en pocas líneas lo útil para el equipo.".into(), false,
             &["xai:grok-4.7", "gemini:gemini-3.8-flash"]),
+        agent("audio", "Audio y voz", "music", "#e0678a", OPUS, "medium",
+            "Voces y narración con tus voces de ElevenLabs, efectos de sonido y música; los prepara para el juego.",
+            &["voz", "voces", "narración", "narracion", "narrador", "doblaje", "audio", "sonido", "sonidos", "efecto de sonido", "música", "musica", "banda sonora", "elevenlabs", "tts"],
+            "Eres el diseñador de sonido del equipo. Usa las herramientas de ElevenLabs: primero lista las voces para elegir la adecuada, luego genera. Nombra los archivos de forma ordenada. Si es para Minecraft, recuerda que solo carga .ogg (mono si suena desde un punto del mundo) y registra los sonidos en sounds.json.".into(), true,
+            &["anthropic:claude-sonnet-5-5"]),
         agent("revisor", "Revisor", "check", "#8a8a8a", OPUS, "medium",
             "Revisa lo que hicieron otros agentes, detecta incoherencias y resume.",
             &["revisa", "revisar", "review", "comprueba", "resume", "resumen", "audita"],
@@ -102,6 +111,9 @@ pub fn default_agents() -> Vec<Agent> {
     for a in v.iter_mut() {
         if a.id == "investigador" {
             a.web_search = true;
+        }
+        if a.id == "audio" {
+            a.mcp = vec!["elevenlabs".into()];
         }
     }
     v

@@ -27,6 +27,8 @@ pub struct AppState {
     pub mcp: crate::mcp::McpManager,
     /// Aprobaciones pendientes (modo manual, comandos…): id → respuesta
     pub approvals: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    /// Autorizaciones OAuth de conectores en curso
+    pub oauth: crate::mcp_http::OAuthPending,
 }
 
 impl AppState {
@@ -41,6 +43,7 @@ impl AppState {
         }
         defaults::migrate(&mut cfg);
         crate::integrations::detect_modpack(&mut cfg);
+        crate::integrations::link_audio(&mut cfg);
         let mut db: Db = load_json(&data.join("db.json")).unwrap_or_default();
         seed(&mut db, &data);
         let ext = extensions::load(&data, &cfg.skill_dirs);
@@ -55,6 +58,7 @@ impl AppState {
             last_ping: AtomicI64::new(chrono::Utc::now().timestamp()),
             mcp: Default::default(),
             approvals: Default::default(),
+            oauth: Default::default(),
         });
         st.flush();
         st
@@ -454,8 +458,12 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
                 }
                 let cfg = st.cfg.read().unwrap().mcp_servers.get(&server).cloned();
                 let Some(cfg) = cfg else { return format!("Servidor MCP {server} no configurado") };
-                return match st.mcp.get(&server, &cfg).await {
-                    Ok(c) => {
+                return match st.mcp.get(&st.http, &server, &cfg).await {
+                    Ok((c, updated)) => {
+                        if let Some(u) = updated {
+                            st.cfg.write().unwrap().mcp_servers.insert(server.clone(), u);
+                            st.mark_cfg();
+                        }
                         let (out, err) = c.call(&tool, input.clone()).await;
                         let out = truncate(&out, 30000);
                         if err { format!("Error: {out}") } else { out }
@@ -464,6 +472,9 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
                 };
             }
 
+            if name.starts_with("elevenlabs_") {
+                return elevenlabs_tool(&st, &tx, &step_id, &mode, project.as_ref(), &name, &input).await;
+            }
             let Some(project) = project else { return "Este agente no tiene carpeta de proyecto".into() };
             let max_chars = st.cfg.read().unwrap().budget.max_file_chars;
 
@@ -545,6 +556,62 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
             format!("Herramienta desconocida: {name}")
         })
     })
+}
+
+pub fn eleven_key(cfg: &Config) -> Option<String> {
+    cfg.providers.get("elevenlabs").map(|p| p.api_key.clone()).filter(|k| !k.is_empty()).or_else(|| std::env::var("ELEVENLABS_API_KEY").ok().filter(|k| !k.is_empty()))
+}
+
+async fn elevenlabs_tool(st: &Arc<AppState>, tx: &Tx, step_id: &str, mode: &str, project: Option<&Project>, name: &str, input: &Value) -> String {
+    let cfg = st.cfg.read().unwrap().clone();
+    let Some(key) = eleven_key(&cfg) else { return "ElevenLabs no está conectado (falta la API key).".into() };
+    let s = |k: &str| input[k].as_str().unwrap_or("").to_string();
+    if name == "elevenlabs_voces" {
+        return crate::elevenlabs::list_voices(&st.http, &key, &s("buscar")).await.unwrap_or_else(|e| format!("Error: {e}"));
+    }
+    let mut archivo = s("archivo");
+    if !archivo.to_lowercase().ends_with(".mp3") {
+        archivo.push_str(".mp3");
+    }
+    let bytes = match name {
+        "elevenlabs_voz" => crate::elevenlabs::tts(&st.http, &key, &s("voice_id"), &s("texto"), &s("model_id")).await,
+        "elevenlabs_efecto" => crate::elevenlabs::sound(&st.http, &key, &s("descripcion"), input["segundos"].as_f64(), input["bucle"].as_bool().unwrap_or(false)).await,
+        "elevenlabs_musica" => crate::elevenlabs::music(&st.http, &key, &s("descripcion"), input["segundos"].as_f64(), input["instrumental"].as_bool().unwrap_or(false)).await,
+        _ => return format!("Herramienta desconocida: {name}"),
+    };
+    let bytes = match bytes {
+        Ok(b) => b,
+        Err(e) => return format!("Error de ElevenLabs: {e}"),
+    };
+    // Dentro del proyecto si el modo lo permite; si no, en la carpeta de audios de faisp.
+    let in_project = match project.filter(|p| !p.path.is_empty()) {
+        Some(p) => match decide(mode, Kind::Edit, p.allow_writes) {
+            Decision::Allow => Some(p),
+            Decision::Ask if ask_approval(st, tx, step_id, name, format!("{archivo} ({} KB)", bytes.len() / 1024), "edit").await => Some(p),
+            _ => None,
+        },
+        None => None,
+    };
+    let target = match in_project {
+        Some(p) => match safe_path(p, &archivo) {
+            Ok(t) => t,
+            Err(e) => return format!("Ruta no permitida: {e}"),
+        },
+        None => st.data.join("audio").join(archivo.replace(['/', '\\'], "_")),
+    };
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if target.exists() {
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let b = st.data.join("backups").join("audio").join(format!("{stamp}_{}", target.file_name().unwrap_or_default().to_string_lossy()));
+        let _ = std::fs::create_dir_all(b.parent().unwrap());
+        let _ = std::fs::copy(&target, b);
+    }
+    match std::fs::write(&target, &bytes) {
+        Ok(_) => format!("Audio guardado en {} ({} KB). Minecraft solo carga .ogg: si es para el juego, conviértelo (convertir_medio del Modpack Launcher).", target.display(), bytes.len() / 1024),
+        Err(e) => format!("No se pudo guardar el audio: {e}"),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -629,8 +696,12 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     for server in &agent.mcp {
         let Some(scfg) = cfg.mcp_servers.get(server).filter(|s| s.enabled).cloned() else { continue };
         mcp_cc.insert(server.clone(), json!({"command": scfg.command, "args": scfg.args, "env": scfg.env}));
-        match st.mcp.get(server, &scfg).await {
-            Ok(client) => {
+        match st.mcp.get(&st.http, server, &scfg).await {
+            Ok((client, updated)) => {
+                if let Some(u) = updated {
+                    st.cfg.write().unwrap().mcp_servers.insert(server.clone(), u);
+                    st.mark_cfg();
+                }
                 for t in client.tools() {
                     let tname = t["name"].as_str().unwrap_or("").to_string();
                     if !agent.mcp_tools.is_empty() && !agent.mcp_tools.contains(&tname) {
@@ -651,6 +722,13 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
                 }
             }
             Err(e) => parts.push(format!("## Aviso\nEl servidor MCP «{}» no está disponible ahora mismo ({e}). Si es el Modpack Launcher, pide al usuario que lo abra.", scfg.label)),
+        }
+    }
+    if agent.mcp.iter().any(|m| m == "elevenlabs") {
+        if eleven_key(&cfg).is_some() {
+            specs.extend(crate::elevenlabs::tool_specs().into_iter().filter(|t| mode != "plan" || t["name"] == "elevenlabs_voces"));
+        } else {
+            parts.push("## Aviso\nElevenLabs no está conectado: pide al usuario su API key en Ajustes → Conectores.".into());
         }
     }
     // Para Claude Code: mismo conjunto de servidores MCP en un .mcp.json temporal

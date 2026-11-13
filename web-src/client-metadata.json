@@ -1,0 +1,10 @@
+{
+  "client_id": "https://faisp.vercel.app/oauth/client-metadata.json",
+  "client_name": "faisp",
+  "client_uri": "https://faisp.vercel.app",
+  "logo_uri": "https://faisp.vercel.app/icon-256.png",
+  "redirect_uris": ["http://127.0.0.1:4317/oauth/callback"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}

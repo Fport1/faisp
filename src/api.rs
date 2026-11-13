@@ -32,6 +32,10 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/app.js", get(|| ui("app.js")))
         .route("/app.css", get(|| ui("app.css")))
         .route("/icon.svg", get(|| ui("icon.svg")))
+        .route("/manifest.json", get(|| ui("manifest.json")))
+        .route("/icon-512.png", get(|| png(include_bytes!("../ui/icon-512.png"))))
+        .route("/icon-256.png", get(|| png(include_bytes!("../ui/icon-256.png"))))
+        .route("/icon-192.png", get(|| png(include_bytes!("../ui/icon-192.png"))))
         .route("/vendor/marked.js", get(|| ui("vendor/marked.js")))
         .route("/vendor/purify.js", get(|| ui("vendor/purify.js")))
         .route("/api/ping", post(ping))
@@ -71,6 +75,7 @@ async fn ui(name: &'static str) -> Response {
         Some("js") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml",
+        Some("json") => "application/manifest+json",
         _ => "application/octet-stream",
     };
     // En desarrollo: FAISP_UI_DIR=ui sirve desde disco (recarga sin recompilar).
@@ -84,11 +89,16 @@ async fn ui(name: &'static str) -> Response {
         "app.js" => include_str!("../ui/app.js"),
         "app.css" => include_str!("../ui/app.css"),
         "icon.svg" => include_str!("../ui/icon.svg"),
+        "manifest.json" => include_str!("../ui/manifest.json"),
         "vendor/marked.js" => include_str!("../ui/vendor/marked.js"),
         "vendor/purify.js" => include_str!("../ui/vendor/purify.js"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, ctype)], body).into_response()
+}
+
+async fn png(b: &'static [u8]) -> Response {
+    ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "max-age=86400")], b).into_response()
 }
 
 async fn ping(State(st): St) -> Json<Value> {
@@ -638,7 +648,7 @@ async fn mcp_list(State(st): St) -> ApiResult {
 async fn mcp_test(State(st): St, Path(name): Path<String>) -> ApiResult {
     let cfg = st.cfg.read().unwrap().mcp_servers.get(&name).cloned().ok_or_else(|| bad("No existe"))?;
     st.mcp.stop(&name).await;
-    let c = st.mcp.get(&name, &cfg).await.map_err(bad)?;
+    let (c, _) = st.mcp.get(&st.http, &name, &cfg).await.map_err(bad)?;
     let tools: Vec<Value> = c.tools().iter().map(|t| json!({"name": t["name"], "description": t["description"].as_str().unwrap_or("").chars().take(160).collect::<String>(), "readOnly": crate::mcp::is_read_only(&cfg, t)})).collect();
     Ok(Json(json!({"server": c.server_info(), "tools": tools})))
 }
@@ -715,4 +725,180 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/mcp/import", post(mcp_import))
         .route("/api/integrations/detect", post(detect_integrations))
         .route("/api/usage/windows", get(usage_windows))
+        .route("/api/providers/{id}/test", post(provider_test))
+        .route("/api/mcp/{name}/connect", post(mcp_connect))
+        .route("/api/mcp/{name}/disconnect", post(mcp_disconnect))
+        .route("/oauth/callback", get(oauth_callback))
+        .route("/api/cli/codex/status", get(codex_status))
+        .route("/api/cli/codex/login", post(codex_login))
+        .route("/api/cli/codex/install", post(codex_install))
+}
+
+
+// ---------------- Probar proveedores (respuesta real) ----------------
+
+struct Collect(std::sync::Mutex<String>);
+impl crate::providers::Sink for Collect {
+    fn text(&self, t: &str) {
+        self.0.lock().unwrap().push_str(t);
+    }
+    fn tool(&self, _: &str, _: &Value) {}
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct TestBody {
+    model: String,
+}
+async fn provider_test(State(st): St, Path(id): Path<String>, Json(b): Json<TestBody>) -> ApiResult {
+    let cfg = st.cfg.read().unwrap().clone();
+    let p = cfg.providers.get(&id).cloned().ok_or_else(|| bad("Proveedor desconocido"))?;
+    let mut model = b.model.clone();
+    if model.is_empty() {
+        model = match id.as_str() {
+            "anthropic" | "claude" => "claude-haiku-5-5".into(),
+            "gemini" => "gemini-3.8-flash".into(),
+            "groq" => "openai/gpt-oss-20b".into(),
+            "xai" => "grok-4.7".into(),
+            "cerebras" => "gpt-oss-120b".into(),
+            "chatgpt" => String::new(),
+            _ => String::new(),
+        };
+        if model.is_empty() && p.kind == "openai" {
+            let list = crate::providers::list_models(&st.http, &cfg, &id).await.unwrap_or_default();
+            model = list.iter().find(|m| m.ends_with(":free")).or(list.first()).cloned().unwrap_or_default();
+        }
+    }
+    if !crate::providers::provider_ready(&cfg, &id) {
+        return Ok(Json(json!({"ok": false, "error": if p.kind == "claude-code" || p.kind == "codex-cli" { "No está instalado" } else { "Falta la API key" }})));
+    }
+    let req = crate::providers::LlmRequest {
+        model_ref: format!("{id}:{model}"),
+        stable: "Prueba de conexión. Responde exactamente con la palabra: ok".into(),
+        messages: vec![("user".into(), "¿Funcionas?".into())],
+        max_tokens: 600,
+        effort: if p.kind == "anthropic" || p.kind == "claude-code" { "low".into() } else { String::new() },
+        ..Default::default()
+    };
+    let t0 = std::time::Instant::now();
+    let sink = Collect(Default::default());
+    let r = tokio::time::timeout(std::time::Duration::from_secs(120), crate::providers::stream_chat(&st.http, &cfg, req, &sink, None)).await;
+    let ms = t0.elapsed().as_millis() as u64;
+    Ok(Json(match r {
+        Ok(Ok(res)) if res.demo => json!({"ok": false, "error": "Sin configurar (respondió el modo demo)"}),
+        Ok(Ok(res)) => json!({"ok": true, "ms": ms, "model": res.model, "text": res.text.chars().take(120).collect::<String>(), "tokens": res.usage.input + res.usage.output}),
+        Ok(Err(e)) => json!({"ok": false, "ms": ms, "error": e.to_string().chars().take(300).collect::<String>()}),
+        Err(_) => json!({"ok": false, "error": "Tiempo agotado (120 s)"}),
+    }))
+}
+
+// ---------------- Conectores remotos con OAuth ----------------
+
+pub fn open_url(url: &str) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+async fn mcp_connect(State(st): St, Path(name): Path<String>) -> ApiResult {
+    let cfg = st.cfg.read().unwrap().mcp_servers.get(&name).cloned().ok_or_else(|| bad("Conector no configurado"))?;
+    if cfg.transport != "http" {
+        return Err(bad("Este conector es local; no necesita iniciar sesión"));
+    }
+    let url = crate::mcp_http::begin(&st.http, &name, &cfg, &st.oauth).await.map_err(bad)?;
+    open_url(&url);
+    Ok(Json(json!({"ok": true, "url": url})))
+}
+
+async fn mcp_disconnect(State(st): St, Path(name): Path<String>) -> ApiResult {
+    {
+        let mut cfg = st.cfg.write().unwrap();
+        if let Some(s) = cfg.mcp_servers.get_mut(&name) {
+            s.oauth = None;
+            s.token.clear();
+        }
+    }
+    st.mcp.stop(&name).await;
+    st.mark_cfg();
+    Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct CallbackQ {
+    code: String,
+    state: String,
+    error: String,
+    error_description: String,
+}
+async fn oauth_callback(State(st): St, Query(q): Query<CallbackQ>) -> Response {
+    let page = |ok: bool, msg: &str| {
+        axum::response::Html(format!("<!doctype html><meta charset=utf-8><title>faisp</title><body style=\"font-family:system-ui;background:#262624;color:#f5f4ef;display:grid;place-items:center;height:100vh;margin:0\"><div style=\"text-align:center\"><div style=\"font-size:42px\">{}</div><h2 style=\"font-weight:500\">{}</h2><p style=\"color:#a8a69e\">Puedes cerrar esta pestaña y volver a faisp.</p></div></body>", if ok { "&#10003;" } else { "&#10007;" }, msg)).into_response()
+    };
+    if !q.error.is_empty() {
+        return page(false, &format!("No se conectó: {} {}", q.error, q.error_description));
+    }
+    let secret = {
+        let pend = st.oauth.0.lock().unwrap();
+        pend.get(&q.state).map(|p| p.server.clone())
+    }
+    .and_then(|srv| st.cfg.read().unwrap().mcp_servers.get(&srv).map(|c| c.oauth_client_secret.clone()));
+    match crate::mcp_http::finish(&st.http, &st.oauth, &q.state, &q.code, secret).await {
+        Ok((server, tokens)) => {
+            {
+                let mut cfg = st.cfg.write().unwrap();
+                if let Some(s) = cfg.mcp_servers.get_mut(&server) {
+                    s.oauth = Some(tokens);
+                    s.enabled = true;
+                }
+            }
+            st.mcp.stop(&server).await;
+            st.mark_cfg();
+            let label = st.cfg.read().unwrap().mcp_servers.get(&server).map(|s| s.label.clone()).unwrap_or(server);
+            page(true, &format!("{label} conectado"))
+        }
+        Err(e) => page(false, &e.to_string()),
+    }
+}
+
+// ---------------- Codex CLI (cuenta de ChatGPT) ----------------
+
+fn codex_exe(st: &AppState) -> Option<std::path::PathBuf> {
+    let configured = st.cfg.read().unwrap().providers.get("chatgpt").map(|p| p.base_url.clone()).unwrap_or_default();
+    crate::providers::find_codex(&configured)
+}
+
+async fn codex_status(State(st): St) -> ApiResult {
+    let Some(exe) = codex_exe(&st) else { return Ok(Json(json!({"found": false}))) };
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.args(["login", "status"]).kill_on_drop(true);
+    hidden(&mut cmd);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
+    let text = match out {
+        Ok(Ok(o)) => format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string(),
+        _ => "No respondió".into(),
+    };
+    let logged = text.to_lowercase().contains("logged in") && !text.to_lowercase().contains("not logged");
+    Ok(Json(json!({"found": true, "path": exe.to_string_lossy(), "loggedIn": logged, "status": text.chars().take(200).collect::<String>()})))
+}
+
+async fn codex_login(State(st): St) -> ApiResult {
+    let exe = codex_exe(&st).ok_or_else(|| bad("Codex CLI no está instalado"))?;
+    #[cfg(windows)]
+    std::process::Command::new("cmd").args(["/C", "start", "Iniciar sesión en ChatGPT", &exe.to_string_lossy(), "login"]).spawn().map_err(bad)?;
+    #[cfg(not(windows))]
+    std::process::Command::new(&exe).arg("login").spawn().map_err(bad)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn codex_install() -> ApiResult {
+    // Solo a petición del usuario (botón): instala el paquete oficial de OpenAI con npm en una consola visible.
+    #[cfg(windows)]
+    std::process::Command::new("cmd").args(["/C", "start", "Instalar Codex CLI", "cmd", "/K", "npm install -g @openai/codex"]).spawn().map_err(bad)?;
+    #[cfg(not(windows))]
+    std::process::Command::new("npm").args(["install", "-g", "@openai/codex"]).spawn().map_err(bad)?;
+    Ok(Json(json!({"ok": true})))
 }

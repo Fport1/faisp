@@ -55,6 +55,29 @@ Los datos se guardan en `%APPDATA%\faisp`: `config.json`, `db.json`, `plugins/`,
 - **Comprobación de locales:** antes de usar Ollama o LiteLLM, faisp comprueba que responden.
 - **Ver modelos:** en Ajustes, este botón lista lo que ofrece cada API, por si cambian los IDs.
 
+## Cuentas, conectores y audio
+
+**Iniciar sesión con tus suscripciones.** Esto evita pagar la API, pero es solo para uso personal: ofrecerlo comercialmente a terceros requiere la aprobación de cada empresa.
+- **Claude (Pro/Max):** a través de tu Claude Code (`claude auth login`).
+- **ChatGPT:** a través de Codex CLI (`codex login`). Es experimental.
+- **Google y xAI:** no ofrecen este tipo de inicio de sesión para otras apps. Con ellos se usa su API key; Gemini tiene nivel gratuito.
+
+**Probar:** en Ajustes → Modelos, cada proveedor tiene un botón que hace una petición real mínima y muestra la latencia.
+
+**Conectores (MCP)** en Ajustes → Conectores. Los remotos usan el transporte Streamable HTTP con OAuth 2.1 + PKCE. El cliente se identifica con su documento de metadatos (`https://faisp.vercel.app/oauth/client-metadata.json`) o, si el servicio no lo admite, con registro dinámico.
+
+| Conector | Cómo se conecta |
+|---|---|
+| GitHub | Tu sesión de `gh` o un token personal |
+| Vercel, Notion, Linear | OAuth en el navegador |
+| Google Drive, Gmail, Calendar | Vista previa para desarrolladores: requiere tu propio cliente OAuth de Google Cloud |
+| Modpack Launcher | Se detecta solo (local) |
+| Personalizado | Cualquier URL MCP, orden local o archivo `.mcp.json` |
+
+Las acciones que cambian algo siguen el modo de permisos.
+
+**ElevenLabs:** el agente "Audio y voz" lista tus voces y genera voz, efectos y música en `.mp3`. Si el Modpack Launcher está conectado, los convierte a `.ogg` para Minecraft.
+
 ## Web (Vercel)
 
 ```bash

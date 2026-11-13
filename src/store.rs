@@ -135,6 +135,31 @@ pub struct McpServerCfg {
     pub auto_allow: Vec<String>,
     /// De dónde se importó (p. ej. "modpack-launcher").
     pub source: String,
+    /// "stdio" (por defecto) o "http" (servidor remoto, Streamable HTTP)
+    pub transport: String,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    /// Orden que imprime un token Bearer (p. ej. "gh auth token")
+    pub token_command: String,
+    /// Token fijo (API key / PAT) si el servicio lo admite
+    pub token: String,
+    /// client_id propio si el servicio exige un cliente OAuth registrado (p. ej. Google)
+    pub oauth_client_id: String,
+    pub oauth_client_secret: String,
+    pub oauth_scope: String,
+    pub oauth: Option<OAuthTokens>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+#[serde(default, rename_all = "camelCase")]
+pub struct OAuthTokens {
+    pub client_id: String,
+    pub token_endpoint: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    /// segundos UNIX
+    pub expires_at: i64,
+    pub resource: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]

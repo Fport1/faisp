@@ -89,6 +89,36 @@ pub fn detect_modpack(cfg: &mut Config) -> bool {
     true
 }
 
+/// El agente de audio usa también la conversión de medios del Modpack Launcher (mp3 → ogg).
+pub fn link_audio(cfg: &mut Config) {
+    if !cfg.mcp_servers.contains_key("modpack-launcher") {
+        return;
+    }
+    if let Some(a) = cfg.agents.iter_mut().find(|a| a.id == "audio") {
+        if !a.mcp.contains(&"modpack-launcher".to_string()) {
+            a.mcp.push("modpack-launcher".into());
+            a.mcp_tools = ["analizar_medio", "convertir_medio", "instancias", "guia", "listar_archivos", "leer_archivo"].iter().map(|s| s.to_string()).collect();
+        }
+    }
+}
+
+/// Busca un ejecutable en el PATH (y la carpeta global de npm en Windows).
+pub fn find_on_path(names: &[&str]) -> Option<PathBuf> {
+    let mut dirs_: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    if let Some(a) = dirs::config_dir() {
+        dirs_.push(a.join("npm"));
+    }
+    for d in dirs_ {
+        for n in names {
+            let p = d.join(n);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
 /// Busca el ejecutable de Claude Code: el configurado, el del PATH, el de la app de escritorio de Claude.
 pub fn find_claude_code(configured: &str) -> Option<PathBuf> {
     if !configured.is_empty() && Path::new(configured).exists() {

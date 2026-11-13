@@ -644,6 +644,7 @@ function editAgent(id) {
     <label>Para qué sirve (lo lee el orquestador para repartir)<input type="text" id="ad" value="${esc(a.description)}"></label>
     <label>Palabras clave (enrutado sin gastar tokens, separadas por comas)<input type="text" id="ak" value="${esc((a.keywords || []).join(', '))}"></label>
     <label>Instrucciones del sistema<textarea class="in" id="as" rows="8">${esc(a.system)}</textarea></label>
+    <label>Conectores que puede usar<div class="row">${[...Object.keys(S.st.config.mcpServers || {}), 'elevenlabs'].filter((v, i, a) => a.indexOf(v) === i).map(n => `<label class="check"><input type="checkbox" class="amcp" value="${esc(n)}" ${(a.mcp || []).includes(n) ? 'checked' : ''}> ${esc(S.st.config.mcpServers?.[n]?.label || (n === 'elevenlabs' ? 'ElevenLabs' : n))}</label>`).join('') || '<span class="muted">Conecta alguno en Ajustes → Conectores</span>'}</div></label>
     <label class="check"><input type="checkbox" id="apf" ${a.preferFree ? 'checked' : ''}> Probar primero los modelos gratuitos o locales de su cadena</label>
     <label class="check"><input type="checkbox" id="at" ${a.tools ? 'checked' : ''}> Puede explorar y escribir en la carpeta del proyecto (herramientas)</label>
     <label class="check"><input type="checkbox" id="ax" ${a.disabled ? 'checked' : ''}> Desactivado</label></div>`,
@@ -652,7 +653,7 @@ function editAgent(id) {
       { label: 'Cancelar' },
       { label: 'Guardar', cls: 'primary', run: async o => {
         const n = { ...a, id: id || $('#ai', o).value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-'), name: $('#an', o).value, icon: $('#aic button.on', o)?.dataset.ic || a.icon, model: $('#am', o).value.trim(), effort: $('#ae', o).value, color: $('#aco', o).value,
-          description: $('#ad', o).value, keywords: $('#ak', o).value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean), system: $('#as', o).value, tools: $('#at', o).checked, preferFree: $('#apf', o).checked, webSearch: $('#aw', o).value === '1', fallbacks: $('#af', o).value.split('\n').map(s => s.trim()).filter(Boolean), disabled: $('#ax', o).checked };
+          description: $('#ad', o).value, keywords: $('#ak', o).value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean), system: $('#as', o).value, tools: $('#at', o).checked, preferFree: $('#apf', o).checked, webSearch: $('#aw', o).value === '1', fallbacks: $('#af', o).value.split('\n').map(s => s.trim()).filter(Boolean), mcp: $('.amcp:checked', o).map(c => c.value), disabled: $('#ax', o).checked };
         if (!n.id || !n.name) throw new Error('ID y nombre son obligatorios');
         const list = id ? cfgAgents.map(x => x.id === id ? n : x) : [...cfgAgents, n];
         await api('PUT', '/api/agents', list); await loadState(); render();
@@ -779,10 +780,17 @@ async function setAccount(body, cfg, save) {
       </div>${acc.found ? `<div class="mono muted" style="font-size:11.5px;margin-top:8px;overflow:hidden;text-overflow:ellipsis">${esc(acc.path)}</div>` : ''}</div>
       <label class="check" style="margin-top:14px"><input type="checkbox" id="us" ${cfg.routing.useSubscription ? 'checked' : ''}> Usar primero mi suscripción para los modelos de Claude (si falla o se agota, sigue con la API y los respaldos)</label>
       <p class="muted" style="font-size:12.5px;margin-top:10px">Esta opción es para tu uso personal. Para distribuir faisp con inicio de sesión de claude.ai a otras personas, hace falta la aprobación de Anthropic.</p></section>
+    <section class="block"><h2>Cuenta de ChatGPT</h2><p>Igual que con Claude: faisp usa tu cuenta de ChatGPT a través de Codex CLI, la herramienta oficial de OpenAI (experimental). Google y xAI no ofrecen este tipo de inicio de sesión para otras apps: con ellos se usa su API key (Gemini tiene nivel gratuito).</p><div class="card" id="codexBox"><span class="muted">Comprobando…</span></div></section>
     <section class="block"><h2>Licencia de faisp</h2><div class="form three">
       <label>Plan<select class="in" id="lplan">${['self-hosted', 'free', 'pro', 'team', 'enterprise'].map(p => `<option ${cfg.license.plan === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
       <label>Clave<input type="text" id="lkey" value="${esc(cfg.license.key)}"></label><label>Email<input type="text" id="lmail" value="${esc(cfg.license.email)}"></label></div>
       <button class="btn primary" id="sv" style="margin-top:12px">Guardar</button></section>`;
+  api('GET', '/api/cli/codex/status').then(cx => {
+    const box = $('#codexBox', body); if (!box) return;
+    box.innerHTML = `<div class="row"><div class="avatar big">${ico('bot', 18)}</div><div style="flex:1;min-width:0"><b>${!cx.found ? 'Codex CLI no instalado' : cx.loggedIn ? 'Sesión iniciada' : 'Sin sesión'}</b><div class="muted" style="font-size:13px">${esc(cx.status || 'Necesita Node.js (ya lo tienes)')}</div></div>${!cx.found ? '<button class="btn" id="cxi">Instalar Codex CLI</button>' : cx.loggedIn ? '' : '<button class="btn accent" id="cxl">Iniciar sesión con ChatGPT</button>'}</div>`;
+    $('#cxi', box)?.addEventListener('click', async () => { if (!confirm('Se abrirá una consola que ejecuta: npm install -g @openai/codex (paquete oficial de OpenAI). ¿Continuar?')) return; await api('POST', '/api/cli/codex/install'); toast('Instalando en la consola; vuelve aquí al terminar'); });
+    $('#cxl', box)?.addEventListener('click', async () => { await api('POST', '/api/cli/codex/login'); toast('Sigue los pasos en el navegador'); });
+  }).catch(() => {});
   $('#li', body)?.addEventListener('click', async () => { await api('POST', '/api/account/login'); toast('Se abrió una ventana: sigue los pasos y vuelve aquí'); setTimeout(() => setAccount(body, cfg, save), 15000); });
   $('#lo', body)?.addEventListener('click', async () => { if (!confirm('¿Cerrar la sesión de Claude Code en este PC?')) return; await api('POST', '/api/account/logout'); setAccount(body, cfg, save); });
   $('#sv', body).onclick = async () => { cfg.routing.useSubscription = $('#us').checked; cfg.license = { plan: $('#lplan').value, key: $('#lkey').value, email: $('#lmail').value }; await save(); };
@@ -821,7 +829,7 @@ function setModels(body, cfg, save) {
       <label>Compresión de la pizarra<select class="in" id="rsum"><option value="heuristic">Heurística (0 tokens)</option><option value="llm">IA</option></select></label></div>
       <label class="check" style="margin-top:12px"><input type="checkbox" id="reco" ${cfg.routing.economy ? 'checked' : ''}> ${ico('zap', 14)} Modo ahorro: probar primero los modelos gratuitos o locales</label></section>
     <section class="block"><h2>Proveedores</h2><p>Cualquier API compatible con OpenAI se añade con su URL base.</p><div id="provs" class="form"></div>
-      <div class="row" style="margin-top:10px"><button class="btn" id="addProv">${ico('plus', 14)} Añadir proveedor</button><button class="btn primary" id="svp">Guardar proveedores</button></div></section>`;
+      <div class="row" style="margin-top:10px"><button class="btn" id="addProv">${ico('plus', 14)} Añadir proveedor</button><button class="btn" id="testAll">${ico('play', 13)} Probar todos los configurados</button><button class="btn primary" id="svp">Guardar proveedores</button></div></section>`;
   $('#rplan', body).value = cfg.routing.planner; $('#rsum', body).value = cfg.routing.summarizer;
   const readDefaults = () => { cfg.defaults = { model: $('#dm').value.trim(), effort: $('#de').value, mode: $('#dmo').value }; cfg.routing.planner = $('#rplan').value; cfg.routing.summarizer = $('#rsum').value; cfg.routing.economy = $('#reco').checked; };
   $('#svd', body).onclick = async () => { readDefaults(); await save(); };
@@ -832,14 +840,15 @@ function setModels(body, cfg, save) {
     await save('Aplicado a todos los agentes');
   };
   const drawProvs = () => {
-    $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px"><span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b><span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span><button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button><button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button></div>
+    $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px"><span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b><span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span>${p.type !== 'elevenlabs' ? `<button class="btn sm" data-ptest="${esc(id)}">${ico('play', 12)} Probar</button>` : ''}<button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button><button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button></div>
       ${p.note ? `<div class="muted" style="font-size:12.5px;margin-bottom:8px">${esc(p.note)}</div>` : ''}<div class="models-out" data-mo="${esc(id)}"></div>
       <div class="form three"><label>Tipo<select class="in" data-pf="${esc(id)}.type">${[['anthropic', 'anthropic'], ['openai', 'openai (compatible)'], ['claude-code', 'Claude Code (suscripción)'], ['mock', 'demo']].map(([k, l]) => `<option value="${k}" ${p.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>${p.type === 'claude-code' ? 'Ruta de claude.exe (vacío = automática)' : 'URL base'}<input type="text" data-pf="${esc(id)}.baseUrl" value="${esc(p.baseUrl)}"></label>
       ${p.type === 'claude-code' ? '<label>Sesión<input type="text" disabled value="En Ajustes → Cuenta"></label>' : `<label>API key ${p.noKeyNeeded ? '(no necesaria)' : ''}<input type="password" data-pf="${esc(id)}.apiKey" value="${esc(p.apiKey)}" placeholder="${p.noKeyNeeded ? 'local' : 'pega tu clave'}" autocomplete="off"></label>`}</div></div>`).join('');
     $$('[data-rmp]').forEach(b => b.onclick = () => { if (confirm('¿Quitar proveedor?')) { delete cfg.providers[b.dataset.rmp]; drawProvs(); } });
     $$('[data-pf]').forEach(inp => inp.onchange = () => { const [id, f] = inp.dataset.pf.split('.'); cfg.providers[id][f] = inp.value; });
-    $$('[data-models]').forEach(b => b.onclick = async () => {
+    $('[data-ptest]').forEach(b => b.onclick = () => testProvider(b.dataset.ptest));
+    $('[data-models]').forEach(b => b.onclick = async () => {
       const id = b.dataset.models, out = $(`[data-mo="${CSS.escape(id)}"]`);
       out.innerHTML = '<div class="muted" style="font-size:12.5px">Consultando… (guarda antes si acabas de pegar la clave)</div>';
       try {
@@ -849,7 +858,16 @@ function setModels(body, cfg, save) {
       } catch (e) { out.innerHTML = `<div class="err" style="font-size:12.5px">${esc(e.message.slice(0, 200))}</div>`; }
     });
   };
+  async function testProvider(id) {
+    const out = $(`[data-mo="${CSS.escape(id)}"]`);
+    out.innerHTML = '<div class="muted" style="font-size:12.5px;margin-bottom:8px">Probando con una petición real mínima…</div>';
+    try {
+      const r = await api('POST', `/api/providers/${encodeURIComponent(id)}/test`, {});
+      out.innerHTML = r.ok ? `<div class="test ok">${ico('tick', 13)} Funciona · ${esc(r.model)} · ${r.ms} ms · «${esc((r.text || '').trim())}»</div>` : `<div class="test bad">${ico('x', 13)} ${esc(r.error || 'Error')}</div>`;
+    } catch (e) { out.innerHTML = `<div class="test bad">${ico('x', 13)} ${esc(e.message.slice(0, 200))}</div>`; }
+  }
   drawProvs();
+  $('#testAll', body).onclick = async () => { readDefaults(); await save('Guardado; probando…'); for (const id of Object.keys(cfg.providers)) if (S.st.providerReady[id]) await testProvider(id); };
   $('#addProv', body).onclick = () => {
     const id = (prompt('ID corto del proveedor (ej. deepseek, azure):') || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
     if (!id) return;
@@ -858,28 +876,123 @@ function setModels(body, cfg, save) {
   $('#svp', body).onclick = async () => { readDefaults(); await save('Proveedores guardados'); };
 }
 
+// Catálogo de conectores (servidores MCP remotos oficiales verificados + integraciones propias)
+const CATALOG = [
+  { id: 'github', name: 'GitHub', color: '#24292f', letter: 'GH', desc: 'Repositorios, issues, pull requests y Actions.', url: 'https://api.githubcopilot.com/mcp/', auth: 'gh', agents: ['codigo'], headers: { 'X-MCP-Toolsets': 'repos,issues,pull_requests,actions' } },
+  { id: 'vercel', name: 'Vercel', color: '#111111', letter: '▲', desc: 'Proyectos, despliegues, logs y dominios.', url: 'https://mcp.vercel.com', auth: 'oauth', agents: ['codigo'] },
+  { id: 'notion', name: 'Notion', color: '#373530', letter: 'N', desc: 'Páginas y bases de datos de tu espacio.', url: 'https://mcp.notion.com/mcp', auth: 'oauth', agents: ['investigador', 'narrativa'] },
+  { id: 'linear', name: 'Linear', color: '#5e6ad2', letter: 'L', desc: 'Issues, proyectos y ciclos.', url: 'https://mcp.linear.app/mcp', auth: 'oauth', agents: ['codigo'] },
+  { id: 'elevenlabs', name: 'ElevenLabs', color: '#000000', letter: '11', desc: 'Tus voces, texto a voz, efectos de sonido y música.', auth: 'apikey', agents: ['audio'] },
+  { id: 'gdrive', name: 'Google Drive', color: '#1a73e8', letter: 'D', desc: 'Archivos de Drive. Vista previa para desarrolladores de Google: requiere tu cliente OAuth de Google Cloud.', url: 'https://drivemcp.googleapis.com/mcp/v1', auth: 'google', agents: ['investigador'] },
+  { id: 'gmail', name: 'Gmail', color: '#ea4335', letter: 'M', desc: 'Correo de Gmail. Vista previa para desarrolladores: requiere tu cliente OAuth.', url: 'https://gmailmcp.googleapis.com/mcp/v1', auth: 'google', agents: ['investigador'] },
+  { id: 'gcalendar', name: 'Google Calendar', color: '#188038', letter: 'C', desc: 'Eventos y calendarios. Vista previa para desarrolladores: requiere tu cliente OAuth.', url: 'https://calendarmcp.googleapis.com/mcp/v1', auth: 'google', agents: ['investigador'] },
+];
+
 async function setConnectors(body, cfg, save) {
   const m = await api('GET', '/api/mcp');
-  body.innerHTML = `<section class="block"><h2>Servidores MCP</h2><p>Herramientas externas que pueden usar los agentes: el mismo estándar que Claude Code, Cursor o Gemini CLI. Las de solo lectura se usan sin preguntar; el resto sigue el modo de permisos.</p>
-      ${m.servers.length ? m.servers.map(s => `<div class="card" style="padding:12px 14px;margin-bottom:8px"><div class="row"><span class="dot ${s.running ? 'on' : ''}" title="${s.running ? 'En marcha' : 'Parado'}"></span><b>${esc(s.label || s.name)}</b><span class="mono muted">${esc(s.name)}</span>${s.running ? `<span class="chip">${s.tools} herramientas</span>` : ''}<span style="flex:1"></span>
-        <label class="check"><input type="checkbox" data-en="${esc(s.name)}" ${s.enabled ? 'checked' : ''}> activo</label><button class="btn sm" data-test="${esc(s.name)}">Probar</button><button class="btn sm danger" data-rm="${esc(s.name)}">Quitar</button></div>
-        ${s.description ? `<div class="muted" style="font-size:13px;margin-top:6px">${esc(s.description)}</div>` : ''}<div class="mono muted" style="font-size:11.5px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.command)}</div><div data-out="${esc(s.name)}"></div></div>`).join('') : '<div class="empty" style="padding:24px">Sin servidores MCP.</div>'}
-      <div class="row" style="margin-top:10px">${m.modpackDetected ? `<button class="btn primary" id="det">${ico('refresh', 14)} Detectar Modpack Launcher</button>` : ''}<button class="btn" id="imp">${ico('download', 14)} Importar .mcp.json…</button></div></section>
-    <section class="block"><h2>Carpetas de skills</h2><p>Skills en formato Claude (<span class="mono">carpeta/skill/SKILL.md</span>), por ejemplo las del Modpack Launcher.</p>
-      ${(cfg.skillDirs || []).map((d, i) => `<div class="row" style="margin-bottom:6px"><span class="chip">${esc(d.label || 'skills')}</span><span class="mono muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.path)}</span><span class="muted" style="font-size:12.5px">${esc((d.agents || []).join(', ') || 'todos')}</span><button class="btn sm danger" data-rsd="${i}">Quitar</button></div>`).join('') || '<div class="muted">Ninguna.</div>'}</section>`;
+  const servers = cfg.mcpServers || {};
+  const status = Object.fromEntries(m.servers.map(s => [s.name, s]));
+  const elKey = cfg.providers.elevenlabs?.apiKey;
+  const isOn = c => c.auth === 'apikey' ? !!elKey : !!servers[c.id] && (servers[c.id].oauth || servers[c.id].token || servers[c.id].tokenCommand || c.auth === 'none');
+  const tile = c => `<div class="tile" style="background:${c.color}">${esc(c.letter)}</div>`;
+  const extra = Object.entries(servers).filter(([k]) => !CATALOG.some(c => c.id === k));
+  body.innerHTML = `<section class="block"><h2>Conectores</h2><p>Dale a tus agentes acceso a tus herramientas y datos. Usan el estándar MCP, igual que los conectores de Claude. Las acciones que cambian algo siguen el modo de permisos.</p>
+      <div class="conn-grid">${CATALOG.map(c => { const on = isOn(c); return `<div class="conn ${on ? 'on' : ''}">${tile(c)}<div class="conn-txt"><b>${esc(c.name)}</b><span>${esc(c.desc)}</span></div>
+        <div class="conn-act">${on ? `<span class="chip eco">${ico('tick', 12)} Conectado</span><button class="btn sm" data-off="${c.id}">Desconectar</button>` : `<button class="btn sm primary" data-on="${c.id}">Conectar</button>`}</div></div>`; }).join('')}
+      ${m.modpackDetected || servers['modpack-launcher'] ? `<div class="conn ${servers['modpack-launcher'] ? 'on' : ''}"><div class="tile" style="background:#4f9d69">${ico('play', 16)}</div><div class="conn-txt"><b>Modpack Launcher</b><span>Instancias, mods, crashes, registro del juego y control en vivo (local).</span></div><div class="conn-act">${servers['modpack-launcher'] ? `<span class="chip eco">${ico('tick', 12)} Detectado</span>` : '<button class="btn sm primary" id="det">Detectar</button>'}</div></div>` : ''}
+      <div class="conn add" id="custom"><div class="tile" style="background:var(--soft);color:var(--text)">${ico('plus', 16)}</div><div class="conn-txt"><b>Conector personalizado</b><span>Cualquier servidor MCP remoto (URL) o local (orden), o importa un .mcp.json.</span></div><div class="conn-act"><button class="btn sm">Añadir</button></div></div></div></section>
+    <section class="block"><h2>Servidores activos</h2>
+      ${m.servers.length ? m.servers.map(s => `<div class="card" style="padding:10px 14px;margin-bottom:8px"><div class="row"><span class="dot ${s.running ? 'on' : ''}" title="${s.running ? 'En marcha' : 'Parado'}"></span><b>${esc(s.label || s.name)}</b><span class="mono muted">${esc(s.name)}</span>${s.running ? `<span class="chip">${s.tools} herramientas</span>` : ''}<span style="flex:1"></span>
+        <span class="muted" style="font-size:12.5px">${esc(agentsUsing(cfg, s.name))}</span><label class="check"><input type="checkbox" data-en="${esc(s.name)}" ${s.enabled ? 'checked' : ''}> activo</label><button class="btn sm" data-test="${esc(s.name)}">Probar</button></div><div data-out="${esc(s.name)}"></div></div>`).join('') : '<div class="muted">Ninguno todavía.</div>'}
+      ${extra.length ? '' : ''}</section>
+    <section class="block"><h2>Carpetas de skills</h2><p>Skills en formato Claude (<span class="mono">carpeta/skill/SKILL.md</span>).</p>
+      ${(cfg.skillDirs || []).map((d, i) => `<div class="row" style="margin-bottom:6px"><span class="chip">${esc(d.label || 'skills')}</span><span class="mono muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.path)}</span><button class="btn sm danger" data-rsd="${i}">Quitar</button></div>`).join('') || '<div class="muted">Ninguna.</div>'}</section>`;
+
+  const assign = (name, ids) => { for (const a of cfg.agents) if (ids.includes(a.id) && !(a.mcp || []).includes(name)) a.mcp = [...(a.mcp || []), name]; };
+  const unassign = name => { for (const a of cfg.agents) a.mcp = (a.mcp || []).filter(x => x !== name); };
+  const reload = () => viewSettings($('#view'));
+  const oauthFlow = async name => {
+    await save('Abriendo el inicio de sesión…');
+    const r = await api('POST', `/api/mcp/${encodeURIComponent(name)}/connect`);
+    toast('Completa el inicio de sesión en el navegador');
+    for (let i = 0; i < 60; i++) { await new Promise(r => setTimeout(r, 3000)); await loadState(); const s = S.st.config.mcpServers?.[name]; if (s?.oauth) { toast('Conectado'); return reload(); } }
+    toast('No se completó el inicio de sesión'); return r;
+  };
+
+  $$('[data-on]', body).forEach(b => b.onclick = async () => {
+    const c = CATALOG.find(x => x.id === b.dataset.on);
+    try {
+      if (c.auth === 'apikey') {
+        const key = prompt('API key de ElevenLabs (elevenlabs.io → Developers → API Keys):');
+        if (!key) return;
+        cfg.providers.elevenlabs = { ...(cfg.providers.elevenlabs || { label: 'ElevenLabs', type: 'elevenlabs', baseUrl: 'https://api.elevenlabs.io' }), apiKey: key.trim() };
+        assign('elevenlabs', c.agents);
+        await save('ElevenLabs conectado'); return reload();
+      }
+      const base = { label: c.name, description: c.desc, transport: 'http', url: c.url, enabled: true, source: 'catálogo', headers: c.headers || {} };
+      if (c.auth === 'gh') {
+        const useGh = confirm('¿Usar la sesión de GitHub CLI (gh) de este PC?\n\nAceptar: usa «gh auth token».\nCancelar: pegar un token personal (PAT).');
+        if (useGh) base.tokenCommand = 'gh auth token';
+        else { const t = prompt('Token personal de GitHub (PAT):'); if (!t) return; base.token = t.trim(); }
+        cfg.mcpServers[c.id] = base; assign(c.id, c.agents);
+        await save('GitHub conectado');
+        const out = await api('POST', `/api/mcp/${c.id}/test`).catch(e => ({ error: e.message }));
+        toast(out.error ? 'Error: ' + out.error.slice(0, 120) : `GitHub: ${out.tools.length} herramientas`);
+        return reload();
+      }
+      if (c.auth === 'google') {
+        const id = prompt('Client ID de tu cliente OAuth de Google Cloud (tipo «Aplicación web», con la API MCP del producto activada).\nURI de redirección a registrar: http://127.0.0.1:4317/oauth/callback');
+        if (!id) return;
+        const secret = prompt('Client secret de ese cliente OAuth:') || '';
+        cfg.mcpServers[c.id] = { ...base, oauthClientId: id.trim(), oauthClientSecret: secret.trim() };
+        assign(c.id, c.agents);
+        return oauthFlow(c.id);
+      }
+      cfg.mcpServers[c.id] = base; assign(c.id, c.agents);
+      await oauthFlow(c.id);
+    } catch (e) { toast('Error: ' + e.message); }
+  });
+  $$('[data-off]', body).forEach(b => b.onclick = async () => {
+    const id = b.dataset.off;
+    if (!confirm('¿Desconectar? Se borran sus credenciales en faisp.')) return;
+    if (id === 'elevenlabs') { cfg.providers.elevenlabs.apiKey = ''; unassign('elevenlabs'); await save('Desconectado'); return reload(); }
+    await api('POST', `/api/mcp/${encodeURIComponent(id)}/disconnect`).catch(() => {});
+    await loadState(); const c2 = structuredClone(S.st.config); delete c2.mcpServers[id]; for (const a of c2.agents) a.mcp = (a.mcp || []).filter(x => x !== id);
+    await api('PUT', '/api/config', c2); await loadState(); toast('Desconectado'); reload();
+  });
+  $('#custom', body).onclick = () => modal('Conector personalizado', `<div class="form">
+      <label>Nombre (id corto)<input type="text" id="cn" placeholder="mi-servidor"></label>
+      <label>Tipo<select class="in" id="ct"><option value="http">Remoto (URL)</option><option value="stdio">Local (orden)</option><option value="import">Importar .mcp.json</option></select></label>
+      <label>URL, orden o ruta del .mcp.json<input type="text" id="cu" placeholder="https://… · C:\\ruta\\servidor.exe args · C:\\ruta\\.mcp.json"></label>
+      <label>Token Bearer (opcional; si no, se intentará OAuth)<input type="password" id="ck" autocomplete="off"></label>
+      <label>Agentes que lo usan<div class="row">${cfg.agents.filter(a => a.id !== 'orquestador').map(a => `<label class="check"><input type="checkbox" value="${esc(a.id)}" ${a.id === 'codigo' ? 'checked' : ''}> ${esc(a.name)}</label>`).join('')}</div></label></div>`,
+    [{ label: 'Cancelar' }, { label: 'Añadir', cls: 'primary', run: async o => {
+      const name = $('#cn', o).value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-'); const t = $('#ct', o).value; const u = $('#cu', o).value.trim(); const tok = $('#ck', o).value.trim();
+      const ids = $$('input[type=checkbox]:checked', o).map(c => c.value);
+      if (t === 'import') { const r = await api('POST', '/api/mcp/import', { path: u }); await loadState(); toast(`${r.imported} importados`); return reload(); }
+      if (!name || !u) throw new Error('Nombre y URL/orden son obligatorios');
+      if (t === 'http') cfg.mcpServers[name] = { label: name, transport: 'http', url: u, token: tok, enabled: true, source: 'personalizado', headers: {} };
+      else { const parts = u.match(/"[^"]+"|\S+/g).map(x => x.replace(/^"|"$/g, '')); cfg.mcpServers[name] = { label: name, transport: 'stdio', command: parts[0], args: parts.slice(1), enabled: true, source: 'personalizado', env: {} }; }
+      assign(name, ids);
+      if (t === 'http' && !tok) return oauthFlow(name);
+      await save('Conector añadido'); reload();
+    } }]);
+  $('#det', body)?.addEventListener('click', async () => { const r = await api('POST', '/api/integrations/detect'); await loadState(); toast(r.changed ? 'Modpack Launcher integrado' : 'Ya estaba integrado'); reload(); });
   $$('[data-en]', body).forEach(c => c.onchange = async () => { cfg.mcpServers[c.dataset.en].enabled = c.checked; await save(); });
-  $$('[data-rm]', body).forEach(b => b.onclick = async () => { if (!confirm('¿Quitar este servidor MCP?')) return; delete cfg.mcpServers[b.dataset.rm]; await save(); setConnectors(body, cfg, save); });
-  $$('[data-rsd]', body).forEach(b => b.onclick = async () => { cfg.skillDirs.splice(+b.dataset.rsd, 1); await save(); setConnectors(body, cfg, save); });
+  $$('[data-rsd]', body).forEach(b => b.onclick = async () => { cfg.skillDirs.splice(+b.dataset.rsd, 1); await save(); reload(); });
   $$('[data-test]', body).forEach(b => b.onclick = async () => {
     const out = $(`[data-out="${CSS.escape(b.dataset.test)}"]`, body);
-    out.innerHTML = '<div class="muted" style="font-size:12.5px;margin-top:8px">Arrancando…</div>';
+    out.innerHTML = '<div class="muted" style="font-size:12.5px;margin-top:8px">Conectando…</div>';
     try {
       const r = await api('POST', `/api/mcp/${encodeURIComponent(b.dataset.test)}/test`);
       out.innerHTML = `<div class="model-list" style="margin-top:8px">${r.tools.map(t => `<span class="chip" title="${esc(t.description)}">${t.readOnly ? ico('eye', 11) : ico('pencil', 11)} ${esc(t.name)}</span>`).join('')}</div>`;
     } catch (e) { out.innerHTML = `<div class="err" style="font-size:12.5px;margin-top:8px">${esc(e.message.slice(0, 300))}</div>`; }
   });
-  $('#det', body)?.addEventListener('click', async () => { const r = await api('POST', '/api/integrations/detect'); await loadState(); toast(r.changed ? 'Modpack Launcher integrado' : 'Ya estaba integrado'); viewSettings($('#view')); });
-  $('#imp', body).onclick = async () => { const path = prompt('Ruta del archivo .mcp.json:'); if (!path) return; const r = await api('POST', '/api/mcp/import', { path }); await loadState(); toast(`${r.imported} servidor(es) importados`); viewSettings($('#view')); };
+}
+
+function agentsUsing(cfg, name) {
+  const list = cfg.agents.filter(a => (a.mcp || []).includes(name)).map(a => a.name);
+  return list.length ? 'Lo usan: ' + list.join(', ') : 'Ningún agente lo usa';
 }
 
 function setBudget(body, cfg, save) {

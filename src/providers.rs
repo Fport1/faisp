@@ -103,6 +103,7 @@ async fn usable(http: &reqwest::Client, cfg: &Config, model_ref: &str) -> bool {
     let pid = parse_model_ref(model_ref).0;
     match cfg.providers.get(&pid) {
         Some(p) if p.kind == "claude-code" => crate::integrations::find_claude_code(&p.base_url).is_some(),
+        Some(p) if p.kind == "codex-cli" => find_codex(&p.base_url).is_some(),
         Some(p) if p.no_key_needed && p.kind != "mock" => local_reachable(http, &p.base_url).await,
         _ => provider_ready(cfg, &pid),
     }
@@ -144,6 +145,9 @@ pub async fn stream_chain(http: &reqwest::Client, cfg: &Config, chain: &[String]
 /// Lista los modelos que ofrece un proveedor (GET /models).
 pub async fn list_models(http: &reqwest::Client, cfg: &Config, id: &str) -> anyhow::Result<Vec<String>> {
     let p = cfg.providers.get(id).ok_or_else(|| anyhow::anyhow!("Proveedor desconocido"))?;
+    if p.kind == "codex-cli" || p.kind == "elevenlabs" {
+        return Ok(vec![]);
+    }
     if p.kind == "claude-code" {
         return Ok(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2"].iter().map(|s| s.to_string()).collect());
     }
@@ -196,6 +200,8 @@ pub fn provider_ready(cfg: &Config, id: &str) -> bool {
     match cfg.providers.get(id) {
         None => false,
         Some(p) if p.kind == "claude-code" => crate::integrations::find_claude_code(&p.base_url).is_some(),
+        Some(p) if p.kind == "codex-cli" => find_codex(&p.base_url).is_some(),
+        Some(p) if p.kind == "elevenlabs" => false, // no es un modelo de lenguaje
         Some(p) if p.kind == "mock" || p.no_key_needed => true,
         Some(p) => api_key(id, p).is_some(),
     }
@@ -212,6 +218,7 @@ pub async fn stream_chat(http: &reqwest::Client, cfg: &Config, req: LlmRequest, 
     match p.kind.as_str() {
         "anthropic" => anthropic(http, &pid, p, &model, req, sink, tools).await,
         "claude-code" => claude_code(&pid, p, &model, req, sink).await,
+        "codex-cli" => codex_cli(&pid, p, &model, req, sink).await,
         "openai" if req.web_search && p.responses_api => responses(http, &pid, p, &model, req, sink).await,
         "openai" => openai(http, &pid, p, &model, req, sink, tools).await,
         _ => Ok(demo(&req, &pid, &model, "proveedor de demostración", sink).await),
@@ -753,6 +760,90 @@ async fn claude_code(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink
         anyhow::bail!("Claude Code terminó con error: {}", err.chars().take(400).collect::<String>());
     }
     result.text = streamed;
+    Ok(result)
+}
+
+// ---------------- Codex CLI (suscripción de ChatGPT del usuario) ----------------
+
+pub fn find_codex(configured: &str) -> Option<std::path::PathBuf> {
+    if !configured.is_empty() && std::path::Path::new(configured).exists() {
+        return Some(configured.into());
+    }
+    crate::integrations::find_on_path(&["codex.exe", "codex.cmd", "codex"])
+}
+
+async fn codex_cli(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink: &dyn Sink) -> anyhow::Result<LlmResult> {
+    use tokio::io::AsyncBufReadExt;
+    let exe = find_codex(&p.base_url).ok_or_else(|| anyhow::anyhow!("No encuentro Codex CLI. Instálalo con: npm install -g @openai/codex"))?;
+    let cwd = req.cwd.clone().filter(|c| std::path::Path::new(c).is_dir());
+    let mut prompt = format!("{}\n\n", req.stable);
+    if !req.volatile.is_empty() {
+        prompt.push_str(&format!("<contexto>\n{}\n</contexto>\n\n", req.volatile));
+    }
+    let n = req.messages.len();
+    for (i, (role, content)) in req.messages.iter().enumerate() {
+        if i + 1 == n {
+            prompt.push_str(content);
+        } else {
+            prompt.push_str(&format!("{}: {}\n\n", if role == "user" { "Usuario" } else { "Asistente" }, content));
+        }
+    }
+    // Límite de la línea de órdenes de Windows (~32 000 caracteres)
+    let prompt: String = if prompt.chars().count() > 28000 { prompt.chars().skip(prompt.chars().count() - 28000).collect() } else { prompt };
+    let sandbox = match req.mode.as_str() {
+        "acceptEdits" | "bypass" if cwd.is_some() => "workspace-write",
+        _ => "read-only",
+    };
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.args(["exec", "--json", "--skip-git-repo-check", "--sandbox", sandbox]);
+    if !model.is_empty() {
+        cmd.args(["-m", model]);
+    }
+    cmd.arg(&prompt).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    cmd.current_dir(cwd.unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into()));
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("No se pudo ejecutar Codex CLI: {e}"))?;
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut result = LlmResult { provider: pid.into(), model: if model.is_empty() { "codex".into() } else { model.into() }, ..Default::default() };
+    let mut text = String::new();
+    let mut error = None;
+    while let Some(line) = lines.next_line().await? {
+        let Ok(ev) = serde_json::from_str::<Value>(&line) else { continue };
+        match ev["type"].as_str().unwrap_or("") {
+            "item.completed" => {
+                let it = &ev["item"];
+                match it["type"].as_str().unwrap_or("") {
+                    "agent_message" => {
+                        let t = it["text"].as_str().unwrap_or("");
+                        if !text.is_empty() {
+                            sink.text("\n\n");
+                            text.push_str("\n\n");
+                        }
+                        sink.text(t);
+                        text.push_str(t);
+                    }
+                    "command_execution" => sink.tool("shell", &json!({"command": it["command"]})),
+                    "file_change" => sink.tool("file_change", &it["changes"]),
+                    _ => {}
+                }
+            }
+            "turn.completed" => {
+                let u = &ev["usage"];
+                result.usage.input += u["input_tokens"].as_u64().unwrap_or(0);
+                result.usage.cache_read += u["cached_input_tokens"].as_u64().unwrap_or(0);
+                result.usage.output += u["output_tokens"].as_u64().unwrap_or(0);
+            }
+            "turn.failed" => error = Some(ev["error"]["message"].as_str().unwrap_or("error").to_string()),
+            "error" => error = Some(ev["message"].as_str().unwrap_or("error").to_string()),
+            _ => {}
+        }
+    }
+    let _ = child.wait().await;
+    if text.is_empty() {
+        anyhow::bail!("Codex CLI: {}", error.unwrap_or_else(|| "sin respuesta (¿has hecho codex login?)".into()));
+    }
+    result.text = text;
     Ok(result)
 }
 

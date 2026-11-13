@@ -158,42 +158,80 @@ impl McpClient {
     /// Ejecuta una herramienta. Devuelve (texto, es_error).
     pub async fn call(&self, tool: &str, args: Value) -> (String, bool) {
         match self.request("tools/call", json!({"name": tool, "arguments": args}), Duration::from_secs(600)).await {
-            Ok(r) => {
-                let mut out = Vec::new();
-                for c in r["content"].as_array().cloned().unwrap_or_default() {
-                    match c["type"].as_str().unwrap_or("") {
-                        "text" => out.push(c["text"].as_str().unwrap_or("").to_string()),
-                        "image" => out.push(format!("[imagen {}]", c["mimeType"].as_str().unwrap_or(""))),
-                        "resource" => out.push(c["resource"]["text"].as_str().unwrap_or("[recurso]").to_string()),
-                        other => out.push(format!("[{other}]")),
-                    }
-                }
-                if out.is_empty() && !r["structuredContent"].is_null() {
-                    out.push(r["structuredContent"].to_string());
-                }
-                (out.join("\n"), r["isError"].as_bool().unwrap_or(false))
-            }
+            Ok(r) => content_to_text(&r),
             Err(e) => (format!("Error MCP: {e}"), true),
         }
     }
 }
 
+/// Convierte el resultado de tools/call en texto. Devuelve (texto, es_error).
+pub fn content_to_text(r: &Value) -> (String, bool) {
+    let mut out = Vec::new();
+    for c in r["content"].as_array().cloned().unwrap_or_default() {
+        match c["type"].as_str().unwrap_or("") {
+            "text" => out.push(c["text"].as_str().unwrap_or("").to_string()),
+            "image" => out.push(format!("[imagen {}]", c["mimeType"].as_str().unwrap_or(""))),
+            "resource" => out.push(c["resource"]["text"].as_str().unwrap_or("[recurso]").to_string()),
+            "resource_link" => out.push(format!("[enlace] {}", c["uri"].as_str().unwrap_or(""))),
+            other => out.push(format!("[{other}]")),
+        }
+    }
+    if out.is_empty() && !r["structuredContent"].is_null() {
+        out.push(r["structuredContent"].to_string());
+    }
+    (out.join("
+"), r["isError"].as_bool().unwrap_or(false))
+}
+
+/// Conexión MCP: local (stdio) o remota (HTTP).
+pub enum Conn {
+    Stdio(Arc<McpClient>),
+    Http(crate::mcp_http::HttpMcp),
+}
+
+impl Conn {
+    pub fn tools(&self) -> Vec<Value> {
+        match self { Conn::Stdio(c) => c.tools(), Conn::Http(c) => c.tools() }
+    }
+    pub fn server_info(&self) -> Value {
+        match self { Conn::Stdio(c) => c.server_info(), Conn::Http(c) => c.server_info() }
+    }
+    pub fn alive(&self) -> bool {
+        match self { Conn::Stdio(c) => c.alive(), Conn::Http(c) => c.alive() }
+    }
+    pub async fn call(&self, tool: &str, args: Value) -> (String, bool) {
+        match self { Conn::Stdio(c) => c.call(tool, args).await, Conn::Http(c) => c.call(tool, args).await }
+    }
+}
+
 #[derive(Default)]
 pub struct McpManager {
-    clients: tokio::sync::Mutex<HashMap<String, Arc<McpClient>>>,
+    clients: tokio::sync::Mutex<HashMap<String, Arc<Conn>>>,
 }
 
 impl McpManager {
-    pub async fn get(&self, name: &str, cfg: &McpServerCfg) -> anyhow::Result<Arc<McpClient>> {
+    /// Devuelve la conexión (arrancándola si hace falta) y, si se refrescó un token OAuth, la config actualizada.
+    pub async fn get(&self, http: &reqwest::Client, name: &str, cfg: &McpServerCfg) -> anyhow::Result<(Arc<Conn>, Option<McpServerCfg>)> {
         let mut m = self.clients.lock().await;
         if let Some(c) = m.get(name) {
             if c.alive() {
-                return Ok(c.clone());
+                return Ok((c.clone(), None));
             }
         }
-        let c = McpClient::start(cfg).await?;
-        m.insert(name.to_string(), c.clone());
-        Ok(c)
+        let mut updated = None;
+        let conn = if cfg.transport == "http" {
+            let mut c2 = cfg.clone();
+            let (token, refreshed) = crate::mcp_http::bearer(http, &mut c2).await?;
+            if refreshed {
+                updated = Some(c2.clone());
+            }
+            Conn::Http(crate::mcp_http::HttpMcp::connect(http, &c2, token).await?)
+        } else {
+            Conn::Stdio(McpClient::start(cfg).await?)
+        };
+        let conn = Arc::new(conn);
+        m.insert(name.to_string(), conn.clone());
+        Ok((conn, updated))
     }
 
     pub async fn stop(&self, name: &str) {
@@ -201,7 +239,7 @@ impl McpManager {
     }
 
     pub async fn status(&self) -> HashMap<String, (bool, usize)> {
-        self.clients.lock().await.iter().map(|(k, c)| (k.clone(), (c.alive(), c.tools.read().unwrap().len()))).collect()
+        self.clients.lock().await.iter().map(|(k, c)| (k.clone(), (c.alive(), c.tools().len()))).collect()
     }
 }
 

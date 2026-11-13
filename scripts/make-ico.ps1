@@ -1,8 +1,8 @@
-# Genera assets/faisp.ico (PNG 256/64/48/32/16 dentro de un ICO) a partir de un PNG de 256x256.
-param([Parameter(Mandatory)][string]$Png256, [Parameter(Mandatory)][string]$OutIco)
+﻿# Genera assets/faisp.ico (PNG 256/64/48/32/16 dentro de un ICO) a partir de un PNG de 256x256.
+param([Parameter(Mandatory)][string]$Png256, [Parameter(Mandatory)][string]$OutIco, [string]$PngDir = "")
 Add-Type -AssemblyName System.Drawing
 $src = [System.Drawing.Image]::FromFile($Png256)
-$sizes = 256, 64, 48, 32, 16
+$sizes = 256, 128, 64, 48, 40, 32, 24, 20, 16
 $blobs = foreach ($s in $sizes) {
   $bmp = New-Object System.Drawing.Bitmap $s, $s, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
   $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -16,6 +16,19 @@ $blobs = foreach ($s in $sizes) {
   $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
   $bmp.Dispose()
   ,$ms.ToArray()
+}
+if ($PngDir) {
+  foreach ($s in 512, 256, 192) {
+    $bmp = New-Object System.Drawing.Bitmap $s, $s, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $g.Clear([System.Drawing.Color]::Transparent)
+    $g.DrawImage($src, 0, 0, $s, $s)
+    $g.Dispose()
+    $bmp.Save((Join-Path $PngDir "icon-$s.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+    $bmp.Dispose()
+  }
 }
 $src.Dispose()
 $out = New-Object System.IO.MemoryStream
