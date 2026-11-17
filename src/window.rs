@@ -71,12 +71,39 @@ fn open(target: &EventLoopWindowTarget<UserEvent>, url: &str, ctx: &mut WebConte
             }
             NewWindowResponse::Deny
         })
-        .build(&window)?;
+        ;
+    #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+    let webview = {
+        // En Linux el WebView (WebKitGTK) va dentro de la caja GTK de la ventana (funciona en X11 y Wayland)
+        use tao::platform::unix::WindowExtUnix;
+        use wry::WebViewBuilderExtUnix;
+        webview.build_gtk(window.default_vbox().ok_or_else(|| anyhow::anyhow!("sin caja GTK"))?)?
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))]
+    let webview = webview.build(&window)?;
     Ok((window, webview))
+}
+
+/// Menú estándar de macOS (faisp, Edición, Ventana): da Cmd+C/V/X/A/Z, Cmd+Q y Cmd+M.
+#[cfg(target_os = "macos")]
+fn mac_menu() -> Option<muda::Menu> {
+    use muda::{Menu, PredefinedMenuItem, Submenu};
+    let menu = Menu::new();
+    let app = Submenu::new("faisp", true);
+    let _ = app.append_items(&[&PredefinedMenuItem::about(None, None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::quit(None)]);
+    let edit = Submenu::new("Edición", true);
+    let _ = edit.append_items(&[&PredefinedMenuItem::undo(None), &PredefinedMenuItem::redo(None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::cut(None), &PredefinedMenuItem::copy(None), &PredefinedMenuItem::paste(None), &PredefinedMenuItem::select_all(None)]);
+    let win = Submenu::new("Ventana", true);
+    let _ = win.append_items(&[&PredefinedMenuItem::minimize(None), &PredefinedMenuItem::fullscreen(None), &PredefinedMenuItem::close_window(None)]);
+    let _ = menu.append_items(&[&app, &edit, &win]);
+    menu.init_for_nsapp();
+    Some(menu)
 }
 
 pub fn run(url: &str, data: &Path, st: Arc<AppState>, rt: tokio::runtime::Runtime) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    #[cfg(target_os = "macos")]
+    let _menu = mac_menu();
     let _ = PROXY.set(Mutex::new(event_loop.create_proxy()));
     let mut ctx = WebContext::new(Some(data.join("webview2")));
     let mut windows: HashMap<WindowId, (Window, WebView)> = HashMap::new();

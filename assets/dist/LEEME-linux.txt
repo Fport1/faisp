@@ -1,0 +1,19 @@
+faisp para Linux (x86-64) · versión alfa
+=========================================
+
+Instalar
+  1. Descomprime:   tar -xzf faisp-linux-x64.tar.gz
+  2. Instala:       ./faisp/instalar.sh
+     (sin sudo: va a ~/.local/bin y al menú de aplicaciones)
+  3. Búscala como «faisp» en tu menú de aplicaciones.
+
+Necesita WebKitGTK 4.1 (el instalador te dice cómo instalarlo si falta):
+  Ubuntu 22.04+ / Debian 12+:  sudo apt install libwebkit2gtk-4.1-0
+  Fedora:                      sudo dnf install webkit2gtk4.1
+  Arch:                        sudo pacman -S webkit2gtk-4.1
+
+Actualizar: descarga la versión nueva y vuelve a ejecutar instalar.sh (la app te avisa).
+Desinstalar: ./faisp/instalar.sh --quitar   (tus datos siguen en ~/.config/faisp)
+
+Tus claves, chats y ajustes se guardan solo en este equipo.
+Web: https://faisp.vercel.app

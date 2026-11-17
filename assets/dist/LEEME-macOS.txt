@@ -1,0 +1,15 @@
+faisp para macOS (Intel y Apple Silicon) · versión alfa
+========================================================
+
+Instalar
+  1. Arrastra «faisp.app» a la carpeta Aplicaciones.
+  2. Ábrela desde Aplicaciones o con Spotlight (Cmd+Espacio → faisp).
+
+Si macOS dice que no puede comprobar el desarrollador:
+  Ajustes del Sistema → Privacidad y seguridad → baja hasta «faisp» → «Abrir igualmente».
+  (O en Terminal: xattr -dr com.apple.quarantine /Applications/faisp.app)
+
+Requiere macOS 11 o posterior.
+Actualizar: la app te avisa; descarga la versión nueva y sustituye la anterior en Aplicaciones.
+Tus claves, chats y ajustes se guardan solo en este Mac.
+Web: https://faisp.vercel.app

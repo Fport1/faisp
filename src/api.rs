@@ -173,6 +173,7 @@ async fn state(State(st): St) -> Json<Value> {
         "monthSpend": month_spend(&db),
         "dataDir": st.data.to_string_lossy(),
         "version": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS,
     }))
 }
 
@@ -315,8 +316,38 @@ async fn pick_folder() -> ApiResult {
         let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
         return Ok(Json(json!({"path": path})));
     }
+    #[cfg(not(windows))]
+    {
+        let path = unix_pick(true).await;
+        return Ok(Json(json!({"path": path})));
+    }
     #[allow(unreachable_code)]
     Ok(Json(json!({"path": ""})))
+}
+
+/// Diálogo nativo para elegir carpeta o archivo en macOS y Linux. Cadena vacía si se cancela.
+#[cfg(not(windows))]
+async fn unix_pick(folder: bool) -> String {
+    let run = |prog: &str, args: Vec<String>| {
+        let mut c = tokio::process::Command::new(prog);
+        c.args(args);
+        c
+    };
+    let mut tries = Vec::new();
+    if cfg!(target_os = "macos") {
+        let what = if folder { r#"choose folder with prompt "Carpeta del proyecto""# } else { r#"choose file with prompt "Adjuntar archivo""# };
+        tries.push(run("osascript", vec!["-e".into(), format!("POSIX path of ({what})")]));
+    } else {
+        tries.push(run("zenity", if folder { vec!["--file-selection".into(), "--directory".into(), "--title=Carpeta del proyecto".into()] } else { vec!["--file-selection".into(), "--title=Adjuntar archivo".into()] }));
+        tries.push(run("kdialog", if folder { vec!["--getexistingdirectory".into(), ".".into()] } else { vec!["--getopenfilename".into(), ".".into()] }));
+    }
+    for mut c in tries {
+        if let Ok(o) = c.output().await {
+            let p = String::from_utf8_lossy(&o.stdout).trim().trim_end_matches('/').to_string();
+            if o.status.success() { return p; }
+        }
+    }
+    String::new()
 }
 
 // ---------------- Chats ----------------
@@ -431,7 +462,12 @@ async fn terminal_run(State(st): St, headers: axum::http::HeaderMap, Json(b): Js
     }
     let cwd2 = cwd.clone();
     let res = tokio::time::timeout(std::time::Duration::from_secs(600), tokio::task::spawn_blocking(move || {
-        hidden_cmd("cmd").args(["/D", "/S", "/C", &format!("chcp 65001>nul & {cmd}")]).current_dir(&cwd2).stdin(std::process::Stdio::null()).output()
+        if cfg!(windows) {
+            hidden_cmd("cmd").args(["/D", "/S", "/C", &format!("chcp 65001>nul & {cmd}")]).current_dir(&cwd2).stdin(std::process::Stdio::null()).output()
+        } else {
+            let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+            hidden_cmd(&sh).args(["-c", &cmd]).current_dir(&cwd2).stdin(std::process::Stdio::null()).output()
+        }
     })).await;
     let (out, code) = match res {
         Ok(Ok(Ok(o))) => {
@@ -1333,6 +1369,14 @@ async fn pick_file(State(st): St) -> ApiResult {
         }
         return Ok(Json(json!({"path": path})));
     }
+    #[cfg(not(windows))]
+    {
+        let path = unix_pick(false).await;
+        if !path.is_empty() {
+            st.picked.lock().unwrap().insert(path.clone());
+        }
+        return Ok(Json(json!({"path": path})));
+    }
     #[allow(unreachable_code)]
     Ok(Json(json!({"path": ""})))
 }
@@ -1572,7 +1616,16 @@ async fn keep_awake_set(State(st): St, Json(b): Json<AwakeBody>) -> Json<Value> 
                 SetThreadExecutionState(ES_CONTINUOUS);
             }
             #[cfg(not(windows))]
-            let _ = rx.recv();
+            {
+                // macOS: caffeinate; Linux: systemd-inhibit. Se paran al apagar la opción.
+                let child = if cfg!(target_os = "macos") {
+                    std::process::Command::new("caffeinate").args(["-i", "-s"]).spawn().ok()
+                } else {
+                    std::process::Command::new("systemd-inhibit").args(["--what=idle:sleep", "--who=faisp", "--why=Trabajo en curso", "sleep", "infinity"]).spawn().ok()
+                };
+                let _ = rx.recv();
+                if let Some(mut c) = child { let _ = c.kill(); }
+            }
         });
         *g = Some(tx);
     } else if !b.on {

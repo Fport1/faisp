@@ -144,7 +144,25 @@ async fn start_server(a: &Args, data: std::path::PathBuf) -> anyhow::Result<Opti
     Ok(Some((url, st)))
 }
 
+/// Las apps abiertas desde el Finder o el menú de Linux reciben un PATH mínimo: sin él no se
+/// encuentran claude, codex, node, git… Se toma el de la shell de inicio de sesión del usuario.
+#[cfg(unix)]
+fn fix_path() {
+    let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    if let Ok(o) = std::process::Command::new(&sh).args(["-lic", "printf '__P__%s__P__' \"$PATH\""]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output() {
+        let s = String::from_utf8_lossy(&o.stdout);
+        if let Some(p) = s.split("__P__").nth(1).filter(|p| !p.is_empty()) {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let full = format!("{p}:{home}/.local/bin:{home}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin");
+            // Seguro: se llama al arrancar, antes de crear hilos
+            unsafe { std::env::set_var("PATH", full) };
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    fix_path();
     let a = args();
     if let Some(d) = &a.data {
         // SAFETY: al arrancar, antes de crear hilos.
