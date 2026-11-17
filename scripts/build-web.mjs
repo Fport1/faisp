@@ -3,6 +3,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = path.join(root, 'web');
@@ -13,6 +15,21 @@ fs.mkdirSync(path.join(out, 'vendor'), { recursive: true });
 
 const copy = (from, to) => fs.copyFileSync(path.join(root, from), path.join(out, to));
 copy('web-src/index.html', 'index.html');
+
+// Descarga para Windows: web/descargar/faisp-windows.zip a partir de la última compilación release
+const exe = path.join(root, 'target/release/faisp.exe');
+if (fs.existsSync(exe)) {
+  const tmp = path.join(os.tmpdir(), 'faisp-zip');
+  const stage = path.join(tmp, 'faisp');
+  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.mkdirSync(stage, { recursive: true });
+  for (const [f, from] of [['faisp.exe', 'target/release/faisp.exe'], ['WebView2Loader.dll', 'assets/WebView2Loader.dll'], ['faisp.ico', 'assets/faisp.ico'], ['Instalar.cmd', 'assets/dist/Instalar.cmd'], ['Desinstalar.cmd', 'assets/dist/Desinstalar.cmd'], ['LEEME.txt', 'assets/dist/LEEME.txt']]) fs.copyFileSync(path.join(root, from), path.join(stage, f));
+  fs.mkdirSync(path.join(out, 'descargar'), { recursive: true });
+  const zip = path.join(out, 'descargar', 'faisp-windows.zip');
+  execFileSync('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path '${stage}' -DestinationPath '${zip}' -Force`], { stdio: 'inherit' });
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log('Descarga de Windows:', zip, Math.round(fs.statSync(zip).size / 1024 / 1024 * 10) / 10, 'MB');
+} else console.warn('Sin target/release/faisp.exe: la web sale sin descarga de Windows (compila con cargo build --release)');
 copy('web-src/demo-api.js', 'demo-api.js');
 for (const f of ['app.js', 'app.css', 'logos.js', 'icon.svg', 'icon-192.png', 'icon-256.png', 'icon-512.png', 'manifest.json', 'vendor/marked.js', 'vendor/purify.js', 'studio.js', 'vendor/three/three.module.min.js', 'vendor/three/LICENSE', 'vendor/three/addons/controls/OrbitControls.js', 'vendor/three/addons/loaders/GLTFLoader.js', 'vendor/three/addons/loaders/OBJLoader.js', 'vendor/three/addons/utils/BufferGeometryUtils.js']) { fs.mkdirSync(path.dirname(path.join(out, f)), { recursive: true }); copy('ui/' + f, f); }
 // Documento de metadatos del cliente OAuth (CIMD) para los conectores remotos

@@ -1,0 +1,23 @@
+faisp para Windows 10/11 (64 bits)
+==================================
+
+Instalar
+  1. Descomprime este .zip (clic derecho -> "Extraer todo").
+  2. Abre "Instalar.cmd" (doble clic).
+  3. Si Windows muestra "Windows protegió tu PC": pulsa "Más información" -> "Ejecutar de todas
+     formas". La app aún no está firmada digitalmente.
+  4. faisp se abre sola. Después la encuentras buscando "faisp" en el menú Inicio.
+
+Primeros pasos
+  - En Ajustes añade tus propias claves de IA, o inicia sesión con tu cuenta de Claude (Claude Code)
+    o de ChatGPT (Codex CLI). También hay opciones gratuitas: Gemini, Groq, Cloudflare u Ollama.
+  - Crea un proyecto y elige su carpeta para que los agentes trabajen con tus archivos.
+
+Privacidad
+  Tus claves, chats y ajustes se guardan solo en este PC (%APPDATA%\faisp).
+
+Desinstalar
+  Abre "Desinstalar.cmd" (también queda copiado en %LOCALAPPDATA%\Programs\faisp).
+
+Necesita Microsoft Edge WebView2, que ya viene con Windows 11 y con Windows 10 actualizado.
+Web: https://faisp.vercel.app
