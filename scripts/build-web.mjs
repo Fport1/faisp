@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -28,6 +29,11 @@ if (fs.existsSync(exe)) {
   const zip = path.join(out, 'descargar', 'faisp-windows.zip');
   execFileSync('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path '${stage}' -DestinationPath '${zip}' -Force`], { stdio: 'inherit' });
   fs.rmSync(tmp, { recursive: true, force: true });
+  // version.json: lo consulta la app para avisar de actualizaciones (y comprueba la huella)
+  const buf = fs.readFileSync(zip);
+  const version = /^version\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8'))[1];
+  let notes = ''; try { notes = execFileSync('git', ['log', '-1', '--format=%s'], { cwd: root }).toString().trim(); } catch {}
+  fs.writeFileSync(path.join(out, 'descargar', 'version.json'), JSON.stringify({ version, channel: 'alfa', date: new Date().toISOString().slice(0, 10), notes, size: buf.length, sha256: createHash('sha256').update(buf).digest('hex'), url: 'https://faisp.vercel.app/descargar/faisp-windows.zip' }, null, 2));
   console.log('Descarga de Windows:', zip, Math.round(fs.statSync(zip).size / 1024 / 1024 * 10) / 10, 'MB');
 } else console.warn('Sin target/release/faisp.exe: la web sale sin descarga de Windows (compila con cargo build --release)');
 copy('web-src/demo-api.js', 'demo-api.js');

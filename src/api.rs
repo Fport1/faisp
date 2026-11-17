@@ -550,6 +550,89 @@ async fn project_asset(State(st): St, Path(id): Path<String>, Query(q): Query<As
     }
 }
 
+// ---------------- Actualizaciones (descarga pública en faisp.vercel.app) ----------------
+
+const UPDATE_BASE: &str = "https://faisp.vercel.app/descargar";
+
+fn ver_tuple(v: &str) -> (u64, u64, u64) {
+    let p: Vec<u64> = v.trim().trim_start_matches('v').split(['.', '-', '+']).take(3).map(|x| x.parse().unwrap_or(0)).collect();
+    (p.first().copied().unwrap_or(0), p.get(1).copied().unwrap_or(0), p.get(2).copied().unwrap_or(0))
+}
+
+async fn fetch_latest(st: &AppState) -> Result<Value, (StatusCode, String)> {
+    let r = st.http.get(format!("{UPDATE_BASE}/version.json?t={}", chrono::Utc::now().timestamp())).timeout(std::time::Duration::from_secs(15)).send().await.map_err(|e| bad(format!("No se pudo consultar: {e}")))?;
+    if !r.status().is_success() {
+        return Err(bad(format!("No se pudo consultar ({})", r.status())));
+    }
+    r.json::<Value>().await.map_err(|e| bad(format!("Respuesta no válida: {e}")))
+}
+
+async fn update_check(State(st): St) -> ApiResult {
+    let v = fetch_latest(&st).await?;
+    let latest = v["version"].as_str().unwrap_or("0.0.0").to_string();
+    let cur = env!("CARGO_PKG_VERSION");
+    Ok(Json(json!({"current": cur, "latest": latest, "available": ver_tuple(&latest) > ver_tuple(cur), "notes": v["notes"], "date": v["date"], "channel": v["channel"], "size": v["size"]})))
+}
+
+/// Descarga la versión nueva, comprueba su huella SHA-256, la descomprime y lanza su Instalar.cmd
+/// (que cierra faisp, copia los archivos y la vuelve a abrir). Los datos del usuario no se tocan.
+async fn update_install(State(st): St, headers: axum::http::HeaderMap) -> ApiResult {
+    if headers.get("x-faisp").is_none() {
+        return Err((StatusCode::FORBIDDEN, "no".into()));
+    }
+    if !cfg!(windows) {
+        return Err(bad("Las actualizaciones automáticas son solo para Windows por ahora"));
+    }
+    let v = fetch_latest(&st).await?;
+    let want = v["sha256"].as_str().unwrap_or("").to_lowercase();
+    let latest = v["version"].as_str().unwrap_or("");
+    if ver_tuple(latest) <= ver_tuple(env!("CARGO_PKG_VERSION")) {
+        return Err(bad("Ya tienes la última versión"));
+    }
+    let bytes = st.http.get(format!("{UPDATE_BASE}/faisp-windows.zip?v={latest}")).timeout(std::time::Duration::from_secs(600)).send().await.map_err(|e| bad(format!("No se pudo descargar: {e}")))?.bytes().await.map_err(|e| bad(format!("Descarga cortada: {e}")))?;
+    let got: String = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
+    };
+    if want.is_empty() || got != want {
+        return Err(bad("La descarga no coincide con la publicada; inténtalo de nuevo más tarde"));
+    }
+    let dir = std::env::temp_dir().join("faisp-update");
+    let dir2 = dir.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let _ = std::fs::remove_dir_all(&dir2);
+        std::fs::create_dir_all(&dir2)?;
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i)?;
+            let Some(name) = f.enclosed_name() else { continue };
+            let out = dir2.join(name);
+            if f.is_dir() {
+                std::fs::create_dir_all(&out)?;
+            } else {
+                if let Some(p) = out.parent() { std::fs::create_dir_all(p)?; }
+                let mut w = std::fs::File::create(&out)?;
+                std::io::copy(&mut f, &mut w)?;
+            }
+        }
+        Ok(())
+    }).await.map_err(|e| bad(e.to_string()))?.map_err(|e| bad(format!("No se pudo descomprimir: {e}")))?;
+    let inst = dir.join("faisp").join("Instalar.cmd");
+    if !inst.is_file() {
+        return Err(bad("El paquete no trae Instalar.cmd"));
+    }
+    let mut c = std::process::Command::new("cmd");
+    c.arg("/C").arg(&inst).arg("/actualizar").current_dir(dir.join("faisp"));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Consola propia y grupo propio: sigue viva cuando el instalador cierra faisp
+        c.creation_flags(0x0000_0010 | 0x0000_0200);
+    }
+    c.spawn().map_err(|e| bad(format!("No se pudo lanzar el instalador: {e}")))?;
+    Ok(Json(json!({"ok": true, "version": latest})))
+}
+
 // ---------------- Artefactos ----------------
 
 #[derive(Deserialize)]
@@ -928,6 +1011,8 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/chats/{id}/stop", post(chat_stop))
         .route("/api/chats/{id}/live", get(chat_live))
         .route("/api/terminal", post(terminal_run))
+        .route("/api/update/check", get(update_check))
+        .route("/api/update/install", post(update_install))
         .route("/api/projects/{id}/git", get(project_git))
         .route("/api/projects/{id}/asset", get(project_asset))
         .route("/api/projects/{id}/git/diff", get(project_git_diff))
