@@ -905,8 +905,6 @@ async fn codex_cli(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink: 
             prompt.push_str(&format!("{}: {}\n\n", if role == "user" { "Usuario" } else { "Asistente" }, content));
         }
     }
-    // Límite de la línea de órdenes de Windows (~32 000 caracteres)
-    let prompt: String = if prompt.chars().count() > 28000 { prompt.chars().skip(prompt.chars().count() - 28000).collect() } else { prompt };
     let sandbox = match req.mode.as_str() {
         "acceptEdits" | "bypass" if cwd.is_some() => "workspace-write",
         _ => "read-only",
@@ -916,11 +914,20 @@ async fn codex_cli(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink: 
     if !model.is_empty() {
         cmd.args(["-m", model]);
     }
-    cmd.arg(&prompt).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    // El prompt va por la entrada estándar («-»): por la línea de órdenes, codex.cmd rechaza saltos de
+    // línea y comillas («batch file arguments are invalid») y además hay un límite de ~32 000 caracteres
+    cmd.arg("-").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     cmd.current_dir(cwd.unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into()));
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("No se pudo ejecutar Codex CLI: {e}"))?;
+    if let Some(mut si) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        tokio::spawn(async move {
+            let _ = si.write_all(prompt.as_bytes()).await;
+            let _ = si.shutdown().await;
+        });
+    }
     let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
     let mut result = LlmResult { provider: pid.into(), model: if model.is_empty() { "codex".into() } else { model.into() }, ..Default::default() };
     let mut text = String::new();

@@ -190,7 +190,8 @@ const md = text => DOMPurify.sanitize(marked.parse(text || ''), { ADD_ATTR: ['ta
 // ---------- Estado global ----------
 async function loadState() {
   S.st = await api('GET', '/api/state');
-  api('GET', '/api/claude/limits').then(l => { S.limits = l; if (S.view === 'chat') drawLimitBanner(); }).catch(() => {});
+  api('GET', '/api/claude/limits').then(l => { S.limits = l; if (S.view === 'chat') drawLimitBanner(); drawUsageRing(); }).catch(() => {});
+  if (!S.planName && S.st.providerReady?.claude) api('GET', '/api/account').then(a => { S.planName = a?.subscriptionType || a?.plan || ''; }).catch(() => {});
   const projects = S.st.projects;
   if (!projects.some(p => p.id === S.projectId)) S.projectId = projects.find(p => p.path)?.id || projects[0]?.id || null;
   renderSidebar();
@@ -329,6 +330,7 @@ function modal(title, bodyHtml, buttons = []) {
 
 // ---------- Router de vistas ----------
 function render() {
+  $$('.spell-card, .usage-pop').forEach(e => e.remove());
   // Al salir del chat que trabaja se deja de mirar (el trabajo sigue); al volver se reengancha
   if (S.streaming && (S.view !== 'chat' || S.chatId !== S.streamChatId)) detachStream();
   S.code = [];
@@ -381,7 +383,9 @@ function renderChat() {
     return;
   }
   const chs = S.chat.chapters || [];
-  v.innerHTML = `${chs.length ? `<div class="chapters">${ico('book', 13)} ${chs.map(c => `<button class="chip" data-goch="${esc(c.messageId)}">${esc(c.title)}</button>`).join('')}</div>` : ''}<div class="thread" id="thread">${S.chat.messages.map(renderMessage).join('')}</div><button class="jump" id="jumpBtn" title="Ir al final">${ico('chevron', 16)}</button>`;
+  v.innerHTML = `${chs.length ? `<div class="chapters">${ico('book', 13)} ${chs.map(c => `<button class="chip" data-goch="${esc(c.messageId)}">${esc(c.title)}</button>`).join('')}</div>` : ''}<div class="thread" id="thread">${S.chat.messages.map(renderMessage).join('')}</div>`;
+  // El botón de ir al final va fuera del área que se desplaza (dentro causaba fallos de repintado)
+  $('#composerWrap').insertAdjacentHTML('afterbegin', `<button class="jump" id="jumpBtn" title="Ir al final">${ico('chevron', 16)}</button>`);
   wireScroll(v);
   if (S.streaming && S.streamChatId === S.chatId && S.liveEl) $('#thread').appendChild(S.liveEl);
   $('#composerWrap').appendChild(composer());
@@ -497,6 +501,7 @@ function composer() {
       <span class="spacer"></span>
       ${S.st.config.routing.economy ? `<span class="chip eco" title="Modo ahorro: se prueban primero los modelos gratuitos">${ico('zap', 12)} ahorro</span>` : ''}
       <button class="chip ctx" id="ctxChip" title="Contexto de esta conversación"></button>
+      <button class="usage-ring hidden" id="usageRing" title="Uso del plan"></button>
       <button class="send ${S.streaming ? 'stop' : ''}" id="sendBtn" title="${S.streaming ? 'Detener (si escribes algo, queda en cola)' : 'Enviar'}">${S.streaming ? ico('stop', 14) : ico('arrowUp', 17, 2.2)}</button>
     </div>`;
   const ta = $('#prompt', wrap), pick = $('#agentPick', wrap), sendBtn = $('#sendBtn', wrap);
@@ -530,6 +535,8 @@ function composer() {
   setupSpell(ta, $('#taMirror', wrap));
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
   setTimeout(updateSendBtn, 0);
+  $('#usageRing', wrap).onclick = e => usagePop(e.currentTarget);
+  setTimeout(drawUsageRing, 0);
   sendBtn.onclick = () => S.streaming && !ta.value.trim() ? stopStream() : send();
   wrap.insertAdjacentHTML('afterbegin', '<div id="queueBox"></div>');
   setTimeout(() => { renderQueue(); updateContext(); }, 0);
@@ -618,7 +625,7 @@ function setupSpell(ta, mirror) {
     const t = ta.value; let html = '', last = 0;
     matches.forEach((m, i) => {
       if (m.offset < last || m.offset + m.length > t.length) return;
-      html += esc(t.slice(last, m.offset)) + `<mark class="${m.type === 'misspelling' ? 'gerr' : 'gstyle'}" data-i="${i}">${esc(t.slice(m.offset, m.offset + m.length))}</mark>`;
+      html += esc(t.slice(last, m.offset)) + `<mark class="${m.type === 'misspelling' ? 'gerr' : 'gstyle'}${i === cardIdx ? ' active' : ''}" data-i="${i}">${esc(t.slice(m.offset, m.offset + m.length))}</mark>`;
       last = m.offset + m.length;
     });
     mirror.innerHTML = html + esc(t.slice(last)) + '\n';
@@ -643,7 +650,8 @@ function setupSpell(ta, mirror) {
     const endOld = a.length - e, delta = b.length - a.length;
     matches = matches.filter(m => m.offset + m.length <= s || m.offset >= endOld).map(m => m.offset >= endOld ? { ...m, offset: m.offset + delta } : m);
   };
-  const hideCard = () => { cardIdx = -1; card?.classList.add('hidden'); };
+  const setActive = () => mirror.querySelectorAll('mark').forEach(mk => mk.classList.toggle('active', +mk.dataset.i === cardIdx));
+  const hideCard = () => { cardIdx = -1; card?.classList.add('hidden'); setActive(); };
   const hideSoon = () => { clearTimeout(hideT); hideT = setTimeout(hideCard, 280); };
   const apply = (i, v) => {
     const m = matches[i]; if (!m) return;
@@ -659,7 +667,7 @@ function setupSpell(ta, mirror) {
   };
   const showCard = (i, rect) => {
     const m = matches[i]; if (!m || !rect) return;
-    clearTimeout(hideT); cardIdx = i;
+    clearTimeout(hideT); cardIdx = i; setActive();
     if (!card) {
       card = document.createElement('div'); card.className = 'spell-card hidden'; document.body.appendChild(card);
       card.onmouseenter = () => clearTimeout(hideT); card.onmouseleave = hideSoon;
@@ -686,10 +694,14 @@ function setupSpell(ta, mirror) {
   ta.addEventListener('mousemove', e => {
     const h = hitAt(e.clientX, e.clientY);
     if (h) { if (h.i !== cardIdx || card?.classList.contains('hidden')) showCard(h.i, h.rect); else clearTimeout(hideT); }
-    else if (cardIdx >= 0) hideSoon();
+    else if (cardIdx >= 0 && atCaret() !== cardIdx) hideSoon();
   });
-  ta.addEventListener('mouseleave', () => { if (cardIdx >= 0) hideSoon(); });
-  ta.addEventListener('click', () => { const i = atCaret(); if (i >= 0) showCard(i, markRect(i)); });
+  // Con el cursor dentro de una palabra marcada (clic o flechas) también sale la tarjeta
+  const caretCard = () => { const i = atCaret(); if (i >= 0) showCard(i, markRect(i)); else if (cardIdx >= 0) hideCard(); };
+  ta.addEventListener('mouseleave', () => { if (cardIdx >= 0 && atCaret() !== cardIdx) hideSoon(); });
+  ta.addEventListener('click', caretCard);
+  ta.addEventListener('keyup', e => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) caretCard(); });
+  ta.addEventListener('focus', () => setTimeout(caretCard, 0));
   ta.addEventListener('blur', hideSoon);
   ta.addEventListener('keydown', e => {
     const shown = cardIdx >= 0 && card && !card.classList.contains('hidden');
@@ -1395,6 +1407,46 @@ function setupPop(ta, wrap) {
   ta.addEventListener('blur', () => setTimeout(close, 150));
 }
 
+// ---------- Anillo de uso del plan (como en Claude) ----------
+function planWins() {
+  const info = normLimits(S.limits?.info); if (!info) return null;
+  const w = info.unifiedWindows || {};
+  return Object.keys(w).length ? w : { [info.rateLimitType || 'five_hour']: { utilization: info.utilization, resetsAt: info.resetsAt } };
+}
+function drawUsageRing() {
+  const b = $('#usageRing'); if (!b) return;
+  const w = planWins();
+  if (!w || !S.st?.providerReady?.claude) { b.classList.add('hidden'); return; }
+  const p = Math.min(1, Math.max(0, ...Object.values(w).map(x => x.utilization || 0)));
+  const r = 7, c = 2 * Math.PI * r, col = p >= 0.9 ? '#e5484d' : p >= 0.7 ? '#f5a524' : '#3e8ef7';
+  b.classList.remove('hidden');
+  b.innerHTML = `<svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="${r}" fill="none" stroke="var(--line2)" stroke-width="2.4"/><circle cx="9" cy="9" r="${r}" fill="none" stroke="${col}" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="${(c * p).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 9 9)"/></svg>`;
+  b.title = `Uso del plan de Claude: ${Math.round(p * 100)} % (clic para ver)`;
+}
+function usagePop(anchor) {
+  $$('.usage-pop').forEach(e => e.remove());
+  const pop = document.createElement('div'); pop.className = 'usage-pop'; document.body.appendChild(pop);
+  const NAMES = { five_hour: 'Límite de 5 horas', seven_day: 'Semanal · todos los modelos', seven_day_opus: 'Semanal · Opus', seven_day_sonnet: 'Semanal · Sonnet', seven_day_oauth_apps: 'Semanal · apps' };
+  const ORDER = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet'];
+  const when = ts => { const d = new Date(ts * 1000), hm = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }); return d.toDateString() === new Date().toDateString() ? 'a las ' + hm : 'el ' + d.toLocaleDateString('es-ES', { weekday: 'short' }) + ', ' + hm; };
+  const place = () => { const r = anchor.getBoundingClientRect(); pop.style.right = Math.max(8, innerWidth - r.right) + 'px'; pop.style.bottom = (innerHeight - r.top + 8) + 'px'; };
+  const draw = state => {
+    const w = planWins() || {};
+    const rows = Object.entries(w).sort((a, b) => (ORDER.indexOf(a[0]) + 99) % 99 - (ORDER.indexOf(b[0]) + 99) % 99).map(([k, v]) => { const p = Math.round((v.utilization || 0) * 100); return `<div class="up-row"><div class="up-line"><span>${esc(NAMES[k] || k)}</span><span class="muted">${v.resetsAt ? 'Se restablece ' + when(v.resetsAt) + ' · ' : ''}${p} %</span></div><div class="up-track"><div style="width:${p}%;${p >= 90 ? 'background:#e5484d' : p >= 70 ? 'background:#f5a524' : ''}"></div></div></div>`; }).join('');
+    pop.innerHTML = `<div class="up-head"><span class="muted">Límites de uso del plan${S.planName ? ' · ' + esc(S.planName) : ''}</span><button class="lnk" id="upAll">Ver todo →</button></div>${rows || '<div class="muted" style="font-size:13px">Sin datos todavía.</div>'}<div class="up-st muted">${state || (S.limits?.checkedAt ? 'Actualizado ' + ago(new Date(S.limits.checkedAt * 1000)) : '')}</div>`;
+    $('#upAll', pop).onclick = () => { close(); S.view = 'settings'; S.settingsTab = 'usage'; renderSidebar(); render(); };
+    place();
+  };
+  const out = e => { if (!pop.contains(e.target) && e.target !== anchor && !anchor.contains(e.target)) close(); };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  const close = () => { pop.remove(); document.removeEventListener('mousedown', out, true); document.removeEventListener('keydown', onKey, true); };
+  document.addEventListener('mousedown', out, true); document.addEventListener('keydown', onKey, true);
+  // Siempre al día: si lo último tiene más de 30 s, se consulta al abrir
+  const fresh = S.limits?.checkedAt && Date.now() / 1000 - S.limits.checkedAt < 30;
+  draw(fresh ? '' : 'Actualizando…');
+  if (!fresh) api('POST', '/api/claude/limits/refresh').then(l => { S.limits = l; drawUsageRing(); drawLimitBanner(); if (pop.isConnected) draw(); }).catch(() => { if (pop.isConnected) draw('No se pudo actualizar ahora'); });
+}
+
 // ---------- Límites: solo si siguen vigentes ----------
 function normLimits(info) {
   if (!info) return info;
@@ -2035,7 +2087,8 @@ async function setUsage(body) {
   const d = await loadAll();
   // Al abrir: si los datos de Claude tienen más de 2 min (o no hay), se piden solos.
   const stale = l => !l || !l.checkedAt || Date.now() / 1000 - l.checkedAt > 120;
-  if (d && S.st.providerReady.claude && stale(d.claude)) refreshClaude(true);
+  // Al entrar en Uso se consulta al momento si lo último tiene más de 30 s
+  if (d && S.st.providerReady.claude && (!d.claude?.checkedAt || Date.now() / 1000 - d.claude.checkedAt > 30)) refreshClaude(true);
   clearInterval(S.usageTimer);
   let tick = 0;
   S.usageTimer = setInterval(async () => {
