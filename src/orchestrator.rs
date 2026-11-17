@@ -31,6 +31,10 @@ pub struct AppState {
     pub oauth: crate::mcp_http::OAuthPending,
     /// Archivos del PC que el usuario eligió con el diálogo (se pueden leer aunque estén fuera del proyecto)
     pub picked: Mutex<std::collections::HashSet<String>>,
+    /// Puerto real del servidor (para que Claude Code se conecte al puente MCP de faisp)
+    pub port: std::sync::atomic::AtomicU16,
+    /// Herramientas propias de faisp expuestas como MCP durante un paso: token → (definiciones, ejecutor)
+    pub bridge: Mutex<HashMap<String, (Vec<Value>, ToolExec)>>,
 }
 
 impl AppState {
@@ -62,6 +66,8 @@ impl AppState {
             approvals: Default::default(),
             oauth: Default::default(),
             picked: Default::default(),
+            port: std::sync::atomic::AtomicU16::new(4317),
+            bridge: Default::default(),
         });
         st.flush();
         st
@@ -183,8 +189,81 @@ pub struct Step {
     pub files: Vec<String>,
     pub skills: Vec<String>,
     pub connectors: Vec<String>,
+    /// Esfuerzo que decide el orquestador para este paso (low | medium | high | xhigh)
+    pub effort: String,
     #[serde(skip_deserializing)]
     pub attachments: Vec<String>,
+}
+
+/// Esfuerzo estimado sin gastar tokens (cuando el plan no lo trae).
+pub fn estimate_effort(task: &str) -> String {
+    let t = task.to_lowercase();
+    let words = t.split_whitespace().count();
+    let hard = ["arquitectura", "refactor", "migra", "depura", "rendimiento", "optimiza", "concurrencia", "seguridad", "desde cero", "sistema completo", "diseña el sistema"];
+    let mid = ["implementa", "código", "codigo", "crea", "diseña", "modelo", "analiza", "escribe", "corrige", "bug", "error", "mod", "función", "funcion", "clase"];
+    if hard.iter().any(|k| t.contains(k)) || words > 120 {
+        "high".into()
+    } else if mid.iter().any(|k| t.contains(k)) || words > 25 {
+        "medium".into()
+    } else {
+        "low".into()
+    }
+}
+
+/// Respuestas que no necesitan ninguna IA (0 tokens): operaciones aritméticas.
+pub fn local_answer(text: &str) -> Option<String> {
+    let t = text.trim().to_lowercase();
+    let mut e = t.as_str();
+    for p in ["¿", "cuánto es", "cuanto es", "cuánto da", "cuanto da", "calcula", "resultado de", "what is", "what's"] {
+        e = e.trim_start_matches(p).trim();
+    }
+    let e = e.trim_end_matches(['?', '=', '.', ' ']).replace('×', "*").replace('÷', "/").replace(',', ".").replace("x", "*");
+    if e.is_empty() || e.len() > 120 || !e.chars().all(|c| c.is_ascii_digit() || " +-*/^%().".contains(c)) || !e.chars().any(|c| "+-*/^%".contains(c)) || !e.chars().any(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let v = eval_expr(&e)?;
+    if !v.is_finite() {
+        return Some(format!("{e} no tiene resultado (división entre cero).\n\n*Calculado localmente: 0 tokens.*"));
+    }
+    let shown = if (v - v.round()).abs() < 1e-9 { format!("{}", v.round() as i64) } else { format!("{:.10}", v).trim_end_matches('0').trim_end_matches('.').to_string() };
+    Some(format!("**{} = {}**\n\n*Calculado localmente: 0 tokens.*", e.trim(), shown))
+}
+
+fn eval_expr(s: &str) -> Option<f64> {
+    // Analizador recursivo: + - * / % ^ y paréntesis
+    struct P<'a> { c: &'a [u8], i: usize }
+    impl P<'_> {
+        fn ws(&mut self) { while self.i < self.c.len() && self.c[self.i] == b' ' { self.i += 1; } }
+        fn peek(&mut self) -> Option<u8> { self.ws(); self.c.get(self.i).copied() }
+        fn expr(&mut self) -> Option<f64> {
+            let mut v = self.term()?;
+            while let Some(op) = self.peek() { if op == b'+' || op == b'-' { self.i += 1; let r = self.term()?; v = if op == b'+' { v + r } else { v - r }; } else { break; } }
+            Some(v)
+        }
+        fn term(&mut self) -> Option<f64> {
+            let mut v = self.pow()?;
+            while let Some(op) = self.peek() { if op == b'*' || op == b'/' || op == b'%' { self.i += 1; let r = self.pow()?; v = match op { b'*' => v * r, b'/' => v / r, _ => v % r }; } else { break; } }
+            Some(v)
+        }
+        fn pow(&mut self) -> Option<f64> {
+            let b = self.unary()?;
+            if self.peek() == Some(b'^') { self.i += 1; let e = self.pow()?; return Some(b.powf(e)); }
+            Some(b)
+        }
+        fn unary(&mut self) -> Option<f64> {
+            match self.peek()? { b'-' => { self.i += 1; Some(-self.unary()?) } b'+' => { self.i += 1; self.unary() } _ => self.atom() }
+        }
+        fn atom(&mut self) -> Option<f64> {
+            if self.peek()? == b'(' { self.i += 1; let v = self.expr()?; if self.peek()? != b')' { return None; } self.i += 1; return Some(v); }
+            let st = self.i;
+            while self.i < self.c.len() && (self.c[self.i].is_ascii_digit() || self.c[self.i] == b'.') { self.i += 1; }
+            std::str::from_utf8(&self.c[st..self.i]).ok()?.parse().ok()
+        }
+    }
+    let mut p = P { c: s.as_bytes(), i: 0 };
+    let v = p.expr()?;
+    p.ws();
+    (p.i == p.c.len()).then_some(v)
 }
 
 fn heuristic_plan(st: &AppState, text: &str, forced: Option<&str>) -> Vec<Step> {
@@ -235,7 +314,7 @@ async fn llm_plan(st: &Arc<AppState>, project: &Option<Project>, chat: &Chat, te
         (if s.is_empty() { "(ninguna)".into() } else { s }, if c.is_empty() { "(ninguno)".into() } else { c })
     };
     let stable = format!(
-        "{}\n\n## Equipo disponible\n{}\n\n## Skills (instrucciones extra que puedes adjuntar a un paso)\n{}\n\n## Conectores (fuentes de contexto externas)\n{}\n\n## Cómo respondes\nDevuelve SOLO un objeto JSON, sin texto alrededor:\n{{\"reply\": null, \"steps\": [{{\"id\":\"s1\",\"agent\":\"<id>\",\"task\":\"<instrucción concreta y autocontenida>\",\"dependsOn\":[],\"files\":[],\"skills\":[],\"connectors\":[]}}]}}\nReglas:\n- Usa el MÍNIMO de pasos (casi siempre 1; máximo 4). Cada agente solo hace lo suyo.\n- Modelos 3D → \"modelos\"; textos/lore → \"narrativa\"; diseño de contenido → \"contenido\"; código → \"codigo\"; revisión → \"revisor\".\n- Si un paso necesita el resultado de otro, ponlo en dependsOn. Los pasos sin dependencias corren en paralelo.\n- \"files\": hasta 5 archivos del proyecto imprescindibles, elegidos del árbol (los agentes además pueden explorar con herramientas).\n- Si es un saludo o una pregunta trivial que puedes contestar en 1-3 frases, ponla en \"reply\" y \"steps\": [].",
+        "{}\n\n## Equipo disponible\n{}\n\n## Skills (instrucciones extra que puedes adjuntar a un paso)\n{}\n\n## Conectores (fuentes de contexto externas)\n{}\n\n## Cómo respondes\nDevuelve SOLO un objeto JSON, sin texto alrededor:\n{{\"reply\": null, \"steps\": [{{\"id\":\"s1\",\"agent\":\"<id>\",\"task\":\"<instrucción concreta y autocontenida>\",\"effort\":\"low|medium|high|xhigh\",\"dependsOn\":[],\"files\":[],\"skills\":[],\"connectors\":[]}}]}}\nReglas:\n- Usa el MÍNIMO de pasos (casi siempre 1; máximo 4). Cada agente solo hace lo suyo.\n- Modelos 3D → \"modelos\"; textos/lore → \"narrativa\"; diseño de contenido → \"contenido\"; código → \"codigo\"; revisión → \"revisor\".\n- Si un paso necesita el resultado de otro, ponlo en dependsOn. Los pasos sin dependencias corren en paralelo.\n- \"files\": hasta 5 archivos del proyecto imprescindibles, elegidos del árbol (los agentes además pueden explorar con herramientas).\n- \"effort\" por paso, el mínimo que baste: low = respuestas cortas, preguntas simples, textos breves o cambios triviales; medium = tareas normales; high = código no trivial, diseño o análisis; xhigh = solo arquitectura, depuración difícil o refactors grandes.\n- Si es un saludo o una pregunta trivial que puedes contestar en 1-3 frases, ponla en \"reply\" y \"steps\": [].",
         orch.system, team_text(&agents), skills_list, conn_list
     );
     let tree = project.as_ref().filter(|p| !p.path.is_empty()).map(|p| compact_tree(&project_tree(std::path::Path::new(&p.path), 600), 60)).unwrap_or_default();
@@ -262,7 +341,7 @@ async fn llm_plan(st: &Arc<AppState>, project: &Option<Project>, chat: &Chat, te
     let user = if recent.is_empty() { format!("Nueva petición:\n{text}") } else { format!("Conversación reciente:\n{}\n\nNueva petición:\n{text}", recent.join("\n")) };
 
     let cfg = st.cfg.read().unwrap().clone();
-    let req = LlmRequest { model_ref: orch.model.clone(), stable, volatile: vol.join("\n\n"), messages: vec![("user".into(), user)], max_tokens: 3000, effort: orch.effort.clone(), tools: vec![], max_rounds: 0, web_search: false, ..Default::default() };
+    let req = LlmRequest { model_ref: orch.model.clone(), stable, volatile: vol.join("\n\n"), messages: vec![("user".into(), user)], max_tokens: 3000, effort: "low".into(), tools: vec![], max_rounds: 0, web_search: false, ..Default::default() };
     let chain = providers::model_chain(&cfg, &orch.model, &orch.fallbacks, orch.prefer_free || cfg.routing.economy);
     let r = match providers::stream_chain(&st.http, &cfg, &chain, req, &NullSink, None).await {
         Ok((r, _)) => r,
@@ -475,6 +554,9 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
                 };
             }
 
+            if name.starts_with("obsidian_") {
+                return obsidian_tool(&st, &tx, &step_id, &mode, &name, &input).await;
+            }
             if name == "leer_google_doc" {
                 let url = input["url"].as_str().unwrap_or("").to_string();
                 return match crate::documents::google_export(&st.http, &url, &st.data.join("tmp")).await {
@@ -601,6 +683,78 @@ async fn gemini_media_tool(st: &Arc<AppState>, project: Option<&Project>, chat_i
     }
 }
 
+fn obsidian_specs() -> Vec<Value> {
+    vec![
+        json!({"name":"obsidian_buscar","description":"Busca texto (o expresión regular) en las notas de la bóveda de Obsidian. Devuelve nota:línea: texto.","input_schema":{"type":"object","properties":{"texto":{"type":"string"},"carpeta":{"type":"string"}},"required":["texto"],"additionalProperties":false}}),
+        json!({"name":"obsidian_listar","description":"Lista carpetas y notas de la bóveda (\"\" = raíz).","input_schema":{"type":"object","properties":{"carpeta":{"type":"string"}},"required":["carpeta"],"additionalProperties":false}}),
+        json!({"name":"obsidian_leer","description":"Lee una nota por su ruta (Carpeta/Nota.md) o por su título (Nota). Incluye los [[enlaces]] que contiene.","input_schema":{"type":"object","properties":{"nota":{"type":"string"}},"required":["nota"],"additionalProperties":false}}),
+        json!({"name":"obsidian_escribir","description":"Crea o modifica una nota. modo: crear | reemplazar | añadir (añade al final). Usa Markdown y [[enlaces]].","input_schema":{"type":"object","properties":{"nota":{"type":"string"},"contenido":{"type":"string"},"modo":{"type":"string","enum":["crear","reemplazar","añadir"]}},"required":["nota","contenido"],"additionalProperties":false}}),
+    ]
+}
+
+fn obsidian_find(vault: &Project, nota: &str) -> Option<String> {
+    let n = nota.trim().trim_start_matches("[[").trim_end_matches("]]");
+    let rel = if n.to_lowercase().ends_with(".md") { n.to_string() } else { format!("{n}.md") };
+    if safe_path(vault, &rel).map(|p| p.exists()).unwrap_or(false) {
+        return Some(rel);
+    }
+    // Por título, en cualquier carpeta (como los [[enlaces]] de Obsidian)
+    let title = std::path::Path::new(&rel).file_name()?.to_string_lossy().to_lowercase();
+    project_tree(std::path::Path::new(&vault.path), 20000).into_iter().find(|f| f.to_lowercase().ends_with(&format!("/{title}")) || f.to_lowercase() == title)
+}
+
+async fn obsidian_tool(st: &Arc<AppState>, tx: &Tx, step_id: &str, mode: &str, name: &str, input: &Value) -> String {
+    let path = st.cfg.read().unwrap().obsidian_vault.clone();
+    if path.is_empty() || !std::path::Path::new(&path).is_dir() {
+        return "Obsidian no está conectado o la carpeta ya no existe.".into();
+    }
+    let vault = Project { id: "obsidian".into(), name: "Obsidian".into(), path, ..Default::default() };
+    let s = |k: &str| input[k].as_str().unwrap_or("").to_string();
+    let max = st.cfg.read().unwrap().budget.max_file_chars;
+    match name {
+        "obsidian_buscar" => tool_search(&vault, &s("texto"), &s("carpeta"), ".md"),
+        "obsidian_listar" => tool_list_dir(&vault, &s("carpeta")),
+        "obsidian_leer" => match obsidian_find(&vault, &s("nota")) {
+            Some(rel) => {
+                let body = tool_read_file(&vault, &rel, 1, 1500, max * 2);
+                let re = regex::Regex::new(r"\[\[([^\]|#]+)").unwrap();
+                let full = std::fs::read_to_string(safe_path(&vault, &rel).unwrap()).unwrap_or_default();
+                let mut links: Vec<String> = re.captures_iter(&full).map(|c| c[1].trim().to_string()).collect();
+                links.dedup();
+                format!("Nota: {rel}\n{body}{}", if links.is_empty() { String::new() } else { format!("\n\nEnlaces: {}", links.join(", ")) })
+            }
+            None => format!("No encuentro la nota «{}». Prueba con obsidian_buscar.", s("nota")),
+        },
+        "obsidian_escribir" => {
+            let nota = s("nota");
+            let rel = obsidian_find(&vault, &nota).unwrap_or_else(|| if nota.to_lowercase().ends_with(".md") { nota.clone() } else { format!("{nota}.md") });
+            let modo = input["modo"].as_str().unwrap_or("crear");
+            let target = match safe_path(&vault, &rel) {
+                Ok(t) => t,
+                Err(_) => return "Ruta no permitida".into(),
+            };
+            let exists = target.exists();
+            if modo == "crear" && exists {
+                return format!("Ya existe «{rel}». Usa modo reemplazar o añadir.");
+            }
+            let new_content = if modo == "añadir" && exists { format!("{}\n\n{}", std::fs::read_to_string(&target).unwrap_or_default().trim_end(), s("contenido")) } else { s("contenido") };
+            let allowed = match decide(mode, Kind::Edit, false) {
+                Decision::Allow => true,
+                Decision::Deny(m) => return m.to_string(),
+                _ => ask_approval(st, tx, step_id, "Obsidian", format!("{} {rel} ({} caracteres)", if exists { "Modificar" } else { "Crear" }, new_content.chars().count()), "edit").await,
+            };
+            if !allowed {
+                return "El usuario no permitió escribir en Obsidian.".into();
+            }
+            match write_with_backup(&vault, &rel, &new_content, &st.data.join("backups")) {
+                Ok(_) => format!("Nota guardada: {rel} (copia de seguridad hecha si existía)."),
+                Err(e) => format!("No se pudo guardar: {e}"),
+            }
+        }
+        _ => format!("Herramienta desconocida: {name}"),
+    }
+}
+
 pub fn eleven_key(cfg: &Config) -> Option<String> {
     cfg.providers.get("elevenlabs").map(|p| p.api_key.clone()).filter(|k| !k.is_empty()).or_else(|| std::env::var("ELEVENLABS_API_KEY").ok().filter(|k| !k.is_empty()))
 }
@@ -666,7 +820,11 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     let b = cfg.budget.clone();
     let agents = st.all_agents();
     let mode = sanitize_mode(&ctx.mode);
-    let effort = if ctx.effort.is_empty() || ctx.effort == "agent" { agent.effort.clone() } else { ctx.effort.clone() };
+    let effort = match ctx.effort.as_str() {
+        "" | "agent" => agent.effort.clone(),
+        "auto" => if ["low", "medium", "high", "xhigh", "max"].contains(&step.effort.as_str()) { step.effort.clone() } else { estimate_effort(&step.task) },
+        e => e.to_string(),
+    };
 
     // Parte estable (se cachea): instrucciones + archivo de sistema + preferencias + proyecto + equipo
     let mut stable = agent.system.clone();
@@ -786,6 +944,14 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
             parts.push("## Aviso\nElevenLabs no está conectado: pide al usuario su API key en Ajustes → Conectores.".into());
         }
     }
+    if agent.mcp.iter().any(|m| m == "obsidian") {
+        if cfg.obsidian_vault.is_empty() {
+            parts.push("## Aviso\nObsidian no está conectado: el usuario puede conectarlo en Ajustes → Conectores.".into());
+        } else {
+            specs.extend(obsidian_specs().into_iter().filter(|t| mode != "plan" || t["name"] != "obsidian_escribir"));
+            parts.push(format!("## Obsidian\nTienes acceso a la bóveda de notas del usuario ({}). Usa [[enlaces]] al escribir notas, como en Obsidian.", cfg.obsidian_vault));
+        }
+    }
     if agent.mcp.iter().any(|m| m == "gemini-media") {
         specs.push(crate::gemini_media::tool_spec());
         let media: Vec<&String> = step.attachments.iter().filter(|a| crate::gemini_media::mime_for(std::path::Path::new(a.as_str())).is_some()).collect();
@@ -797,13 +963,7 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
         }
     }
     // Para Claude Code: mismo conjunto de servidores MCP en un .mcp.json temporal
-    let mcp_config = if mcp_cc.is_empty() {
-        None
-    } else {
-        let f = st.data.join("mcp").join(format!("{}.json", agent.id));
-        let _ = std::fs::create_dir_all(f.parent().unwrap());
-        std::fs::write(&f, json!({"mcpServers": mcp_cc}).to_string()).ok().map(|_| f.to_string_lossy().to_string())
-    };
+
 
     // Historial reciente del chat (recortado) + tarea
     let mut msgs: Vec<(String, String)> = Vec::new();
@@ -846,6 +1006,28 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     })));
 
     let exec = if use_tools { Some(make_tools(st.clone(), project.clone(), chat.id.clone(), agent.id.clone(), tx.clone(), step.id.clone(), mode.clone(), mcp_map)) } else { None };
+    // Puente MCP: si el paso acaba en Claude Code, recibe también las herramientas propias de faisp
+    // (Obsidian, ElevenLabs, Gemini, Google Docs). Los permisos los sigue aplicando faisp.
+    const BUILTIN: [&str; 4] = ["obsidian_", "elevenlabs_", "analizar_medio_gemini", "leer_google_doc"];
+    let builtin: Vec<Value> = specs.iter().filter(|t| BUILTIN.iter().any(|p| t["name"].as_str().unwrap_or("").starts_with(p))).cloned().collect();
+    let bridge_token = match (&exec, builtin.is_empty()) {
+        (Some(ex), false) => {
+            let token = uid("br_");
+            st.bridge.lock().unwrap().insert(token.clone(), (builtin, ex.clone()));
+            let port = st.port.load(std::sync::atomic::Ordering::Relaxed);
+            mcp_cc.insert("faisp".into(), json!({"type": "http", "url": format!("http://127.0.0.1:{port}/mcp/{token}")}));
+            mcp_allow.push("mcp__faisp".into());
+            Some(token)
+        }
+        _ => None,
+    };
+    let mcp_config = if mcp_cc.is_empty() {
+        None
+    } else {
+        let f = st.data.join("mcp").join(format!("{}-{}.json", agent.id, step.id));
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        std::fs::write(&f, json!({"mcpServers": mcp_cc}).to_string()).ok().map(|_| f.to_string_lossy().to_string())
+    };
     let req = LlmRequest {
         model_ref: agent.model.clone(),
         stable,
@@ -862,7 +1044,11 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
         mcp_allow,
     };
     let sink = StepSink { tx: tx.clone(), step: step.id.clone() };
-    let (r, fallback_notes) = match providers::stream_chain(&st.http, &cfg, &chain, req, &sink, exec).await {
+    let chain_result = providers::stream_chain(&st.http, &cfg, &chain, req, &sink, exec).await;
+    if let Some(t) = &bridge_token {
+        st.bridge.lock().unwrap().remove(t);
+    }
+    let (r, fallback_notes) = match chain_result {
         Ok(x) => x,
         Err(e) => {
             let _ = tx.send(("step_error".into(), json!({"stepId": step.id, "error": e.to_string()})));
@@ -965,7 +1151,10 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
         let media = attachments.iter().any(|a| crate::gemini_media::mime_for(std::path::Path::new(a)).map(|m| m.starts_with("video") || m.starts_with("audio") || m.starts_with("image")).unwrap_or(false));
         (media && st.agent("multimedia").is_some()).then(|| "multimedia".to_string())
     });
-    let (reply, mut steps, plan_usage) = if let Some(a) = &agent_id {
+    let local = if attachments.is_empty() { local_answer(&text) } else { None };
+    let (reply, mut steps, plan_usage) = if let Some(r) = local {
+        (Some(r), vec![], None)
+    } else if let Some(a) = &agent_id {
         (None, heuristic_plan(&st, &text, Some(a)), None)
     } else if planner == "heuristic" {
         (None, heuristic_plan(&st, &text, None), None)

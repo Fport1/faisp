@@ -60,7 +60,7 @@ const ICONS = {
   shield: '<path d="M12 3 4.5 6v6c0 4.5 3.2 7.8 7.5 9 4.3-1.2 7.5-4.5 7.5-9V6z"/>',
 };
 // ---------- Logos de proveedores y conectores ----------
-const PROVIDER_BRAND = { cloudflare: 'cloudflare', anthropic: 'anthropic', claude: 'claude', gemini: 'googlegemini', ollama: 'ollama', xai: 'x', openrouter: 'openrouter', mistral: 'mistralai', elevenlabs: 'elevenlabs', github: 'github', vercel: 'vercel', notion: 'notion', linear: 'linear', gdrive: 'googledrive', gmail: 'gmail', gcalendar: 'googlecalendar' };
+const PROVIDER_BRAND = { obsidian: 'obsidian', cloudflare: 'cloudflare', anthropic: 'anthropic', claude: 'claude', gemini: 'googlegemini', ollama: 'ollama', xai: 'x', openrouter: 'openrouter', mistral: 'mistralai', elevenlabs: 'elevenlabs', github: 'github', vercel: 'vercel', notion: 'notion', linear: 'linear', gdrive: 'googledrive', gmail: 'gmail', gcalendar: 'googlecalendar' };
 const DARK_BRANDS = ['000000', '181717', '191919'];
 function brandTile(id, label = '', size = 38) {
   const b = typeof BRAND !== 'undefined' && BRAND[PROVIDER_BRAND[id] || id];
@@ -113,6 +113,23 @@ function wireModelPicker(sel) {
     sel.value = v; prev = v;
   });
 }
+// Páginas oficiales de uso de cada proveedor (verificadas)
+const USAGE_LINKS = {
+  claude: [['Uso en Claude', 'https://claude.ai/settings/usage']],
+  anthropic: [['Uso', 'https://platform.claude.com/usage']],
+  gemini: [['Uso', 'https://aistudio.google.com/usage'], ['Límites', 'https://aistudio.google.com/rate-limit']],
+  groq: [['Uso', 'https://console.groq.com/dashboard/usage']],
+  xai: [['Consola', 'https://console.x.ai']],
+  openrouter: [['Actividad', 'https://openrouter.ai/activity'], ['Créditos', 'https://openrouter.ai/settings/credits']],
+  elevenlabs: [['Uso', 'https://elevenlabs.io/app/developers/analytics/usage'], ['Plan', 'https://elevenlabs.io/app/subscription']],
+  openai: [['Uso', 'https://platform.openai.com/usage']],
+  chatgpt: [['Uso de Codex', 'https://chatgpt.com/codex/settings/usage']],
+  mistral: [['Uso', 'https://console.mistral.ai/usage']],
+  cerebras: [['Consola', 'https://cloud.cerebras.ai']],
+  cloudflare: [['Uso', 'https://dash.cloudflare.com/?to=/:account/ai/workers-ai']],
+};
+const usageLinks = id => (USAGE_LINKS[id] || []).map(([l, u]) => `<a class="extlink" href="${u}" target="_blank" rel="noopener" title="${esc(u)}">${esc(l)} ${ico('external', 11)}</a>`).join('');
+
 const KEY_URLS = { cloudflare: 'https://dash.cloudflare.com/?to=/:account/ai/workers-ai', anthropic: 'https://console.anthropic.com/settings/keys', gemini: 'https://aistudio.google.com/apikey', groq: 'https://console.groq.com/keys', xai: 'https://console.x.ai', openrouter: 'https://openrouter.ai/keys', cerebras: 'https://cloud.cerebras.ai', mistral: 'https://console.mistral.ai/api-keys', openai: 'https://platform.openai.com/api-keys', elevenlabs: 'https://elevenlabs.io/app/settings/api-keys' };
 
 const MODES = [
@@ -122,8 +139,8 @@ const MODES = [
   { id: 'plan', label: 'Plan', icon: 'book', desc: 'Solo lee y te propone un plan; no cambia nada' },
   { id: 'bypass', label: 'Omitir permisos', icon: 'alert', desc: 'Todo sin preguntar. Úsalo con cuidado' },
 ];
-const EFFORTS = [['agent', 'Según el agente'], ['low', 'Bajo'], ['medium', 'Medio'], ['high', 'Alto'], ['xhigh', 'Muy alto'], ['max', 'Máximo']];
-const EFFORT_LEVELS = EFFORTS.slice(1);
+const EFFORTS = [['auto', 'Automático'], ['agent', 'Según el agente'], ['low', 'Bajo'], ['medium', 'Medio'], ['high', 'Alto'], ['xhigh', 'Muy alto'], ['max', 'Máximo']];
+const EFFORT_LEVELS = EFFORTS.slice(2);
 const AGENT_ICONS = ['play', 'compass', 'code', 'cube', 'feather', 'map', 'globe', 'check', 'search', 'book', 'palette', 'music', 'image', 'shield', 'sparkle', 'bot', 'wrench', 'chart', 'layers'];
 const ico = (name, size = 16, sw = 1.75) => `<svg class="i" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ICONS.sparkle}</svg>`;
 const agentIcon = (a, size = 16) => a && ICONS[a.icon] ? `<span style="color:${esc(a.color || 'currentColor')};display:inline-flex">${ico(a.icon, size)}</span>` : esc(a?.icon || '');
@@ -132,7 +149,7 @@ const MODEL_SUGGESTIONS = ['anthropic:claude-opus-5-5', 'anthropic:claude-sonnet
 
 const S = {
   st: null, view: 'chat', projectId: store.get('projectId', null), chatId: null, chat: null,
-  streaming: false, abort: null, attachments: [], agent: 'auto', mode: store.get('mode', ''), effort: store.get('effort', 'agent'), panelTab: 'board', artifactId: null,
+  streaming: false, abort: null, attachments: [], agent: 'auto', mode: store.get('mode', ''), effort: store.get('effort', 'auto'), panelTab: 'board', artifactId: null,
   artifacts: [], lastPlan: null, code: [],
 };
 
@@ -442,10 +459,10 @@ function composer() {
   drawPick();
   const modePick = $('#modePick', wrap), effPick = $('#effPick', wrap);
   const drawMode = () => { const m = MODES.find(x => x.id === curMode()) || MODES[0]; modePick.innerHTML = `${ico(m.icon, 14)}<span>${m.label}</span>`; modePick.classList.toggle('warn', m.id === 'bypass'); };
-  const drawEff = () => { const e = EFFORTS.find(x => x[0] === S.effort) || EFFORTS[0]; effPick.innerHTML = `${ico('chart', 14)}<span>${S.effort === 'agent' ? 'Esfuerzo' : e[1]}</span>`; };
+  const drawEff = () => { const e = EFFORTS.find(x => x[0] === S.effort) || EFFORTS[0]; effPick.innerHTML = `${ico('chart', 14)}<span>${S.effort === 'agent' ? 'Esfuerzo' : S.effort === 'auto' ? 'Esfuerzo auto' : e[1]}</span>`; };
   drawMode(); drawEff();
   modePick.addEventListener('redraw', drawMode); effPick.addEventListener('redraw', drawEff);
-  const EFF_DESC = { agent: 'El configurado en cada agente (por defecto, medio)', low: 'Rápido y barato', medium: 'Equilibrado', high: 'Piensa más', xhigh: 'Para tareas difíciles', max: 'Sin límite de razonamiento' };
+  const EFF_DESC = { auto: 'El orquestador decide por tarea: bajo para lo simple, alto para lo complejo', agent: 'El configurado en cada agente (por defecto, medio)', low: 'Rápido y barato', medium: 'Equilibrado', high: 'Piensa más', xhigh: 'Para tareas difíciles', max: 'Sin límite de razonamiento' };
   modePick.onclick = () => menu(modePick, MODES.map(m => ({ label: `${ico(m.icon, 16)}<div><div>${m.label}${m.id === curMode() ? ' ' + ico('tick', 13) : ''}</div><div class="sub wrap">${m.desc}</div></div>`, run: () => { S.mode = m.id; store.set('mode', m.id); drawMode(); } })));
   effPick.onclick = () => menu(effPick, EFFORTS.map(([k, l]) => ({ label: `${ico('chart', 16)}<div><div>${l}${k === S.effort ? ' ' + ico('tick', 13) : ''}</div><div class="sub wrap">${EFF_DESC[k]}</div></div>`, run: () => { S.effort = k; store.set('effort', k); drawEff(); } })));
   pick.onclick = () => menu(pick, [
@@ -610,7 +627,7 @@ async function send() {
       const html = renderStep({ id: d.stepId, agentId: d.agent, model: d.model, task: d.task, text: '' }, single, true);
       $('#liveStatus', live)?.insertAdjacentHTML('beforebegin', html);
       const el = $(`[data-step="${CSS.escape(d.stepId)}"]`, live);
-      $('.meta', el).insertAdjacentHTML('afterbegin', `<span class="dot run"></span><span title="Contexto estimado enviado">~${fmtTok(d.context?.estTokens || 0)} ctx</span>`);
+      $('.meta', el).insertAdjacentHTML('afterbegin', `<span class="dot run"></span>${d.effort ? `<span class="chip effchip" title="Esfuerzo de este paso">${esc({ low: 'bajo', medium: 'medio', high: 'alto', xhigh: 'muy alto', max: 'máximo' }[d.effort] || d.effort)}</span>` : ''}<span title="Contexto estimado enviado">~${fmtTok(d.context?.estTokens || 0)} ctx</span>`);
       steps[d.stepId] = { el, text: '', dirty: false };
       if (document.body.classList.contains('panel-open') && S.panelTab === 'board') renderPanel();
     } else if (ev === 'delta') { const s = steps[d.stepId]; if (s) { s.text += d.text; s.dirty = true; } }
@@ -1116,7 +1133,7 @@ function limitsHtml(l) {
 }
 
 async function setUsage(body) {
-  body.innerHTML = `<section class="block"><div class="row"><h2 style="margin:0;flex:1">Tu plan de Claude</h2><span class="muted" style="font-size:12.5px" id="limState"></span><button class="btn sm" id="limRefresh">${ico('refresh', 13)} Actualizar</button></div>
+  body.innerHTML = `<section class="block"><div class="row"><h2 style="margin:0;flex:1">Tu plan de Claude</h2><span class="muted" style="font-size:12.5px" id="limState"></span>${usageLinks('claude')}<button class="btn sm" id="limRefresh">${ico('refresh', 13)} Actualizar</button></div>
       <p>Los mismos datos que muestra Claude en Ajustes → Uso. Se actualizan solos mientras tienes esta pantalla abierta.</p><div id="limBox"><div class="muted">Cargando…</div></div></section>
     <section class="block"><div class="row"><h2 style="margin:0;flex:1">Otras IAs</h2></div><p>Límites de cada API (los que devuelven en sus respuestas), créditos o plan de la cuenta cuando el servicio lo publica, y lo que ha gastado faisp con cada una.</p><div id="provBox"><div class="muted">Cargando…</div></div></section>
     <section class="block"><h2>Este mes en faisp</h2><div class="stats" id="monthBox"></div>
@@ -1187,9 +1204,9 @@ function providerUsageCard(id, p) {
   if (a && a.kind === 'characters') {
     rows.push(`<div class="ubar sm"><div class="row"><span>Caracteres del plan${a.tier ? ' · ' + esc(a.tier) : ''}</span><span class="muted" style="font-size:12px">${a.resetsAt ? fmtReset(a.resetsAt) : ''}</span><span style="flex:1"></span><span class="mono">${fmtN(a.used)} / ${fmtN(a.limit)}</span></div><div class="track"><div style="width:${pct(+a.used, +a.limit)}%"></div></div></div>`);
   }
-  if (!rows.length) rows.push(`<div class="muted" style="font-size:12.5px">${p.kind === 'codex-cli' ? 'Codex CLI no informa de los límites de tu plan de ChatGPT.' : p.kind === 'openai' && ['gemini'].includes(id) ? 'Gemini no devuelve sus límites en las respuestas; consúltalos en AI Studio.' : id === 'cloudflare' ? 'Gratis hasta 10.000 neuronas al día (se reinicia a las 00:00 UTC); el consumo exacto se ve en el panel de Cloudflare.' : 'Aún no hay datos de límites: aparecerán al usarlo o con «Comprobar».'}</div>`);
+  if (!rows.length) rows.push(`<div class="muted" style="font-size:12.5px">${p.kind === 'codex-cli' ? 'Codex CLI no informa de los límites de tu plan de ChatGPT.' : p.kind === 'openai' && ['gemini'].includes(id) ? 'Gemini no devuelve sus límites en las respuestas: ábrelos con «Uso» o «Límites».' : id === 'cloudflare' ? 'Gratis hasta 10.000 neuronas al día (se reinicia a las 00:00 UTC); el consumo exacto se ve en el panel de Cloudflare.' : 'Aún no hay datos de límites: aparecerán al usarlo o con «Comprobar».'}</div>`);
   return `<div class="card pu"><div class="row" style="margin-bottom:8px">${brandTile(id, p.label, 26)}<span class="dot ${p.ready ? 'on' : ''}"></span><b>${esc(p.label)}</b>${p.free ? `<span class="chip eco">${ico('zap', 11)} gratis</span>` : ''}<span style="flex:1"></span>
-      <span class="muted" style="font-size:12.5px">7 días: ${fmtTok(p.week.tokens)} tok${p.week.cost ? ' · ' + fmtUsd(p.week.cost) : ''} · ${p.week.calls} llamadas</span>${p.ready && p.kind !== 'elevenlabs' ? `<button class="btn sm" data-check="${esc(id)}">Comprobar</button>` : ''}</div>${rows.join('')}</div>`;
+      ${usageLinks(id)}<span class="muted" style="font-size:12.5px">7 días: ${fmtTok(p.week.tokens)} tok${p.week.cost ? ' · ' + fmtUsd(p.week.cost) : ''} · ${p.week.calls} llamadas</span>${p.ready && p.kind !== 'elevenlabs' ? `<button class="btn sm" data-check="${esc(id)}">Comprobar</button>` : ''}</div>${rows.join('')}</div>`;
 }
 
 function fmtRateReset(r) {
@@ -1223,7 +1240,7 @@ function setModels(body, cfg, save) {
     await save('Aplicado a todos los agentes');
   };
   const drawProvs = () => {
-    $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px">${brandTile(id, p.label, 30)}<span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b>${KEY_URLS[id] && !p.apiKey ? `<a class="keylink" href="${KEY_URLS[id]}" target="_blank" rel="noopener">${ico('key', 12)} Obtener clave</a>` : ''}<span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span>${p.type !== 'elevenlabs' ? `<button class="btn sm" data-ptest="${esc(id)}">${ico('play', 12)} Probar</button>` : ''}<button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button><button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button></div>
+    $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px">${brandTile(id, p.label, 30)}<span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b>${KEY_URLS[id] && !p.apiKey ? `<a class="keylink" href="${KEY_URLS[id]}" target="_blank" rel="noopener">${ico('key', 12)} Obtener clave</a>` : usageLinks(id)}<span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span>${p.type !== 'elevenlabs' ? `<button class="btn sm" data-ptest="${esc(id)}">${ico('play', 12)} Probar</button>` : ''}<button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button><button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button></div>
       ${p.note ? `<div class="muted" style="font-size:12.5px;margin-bottom:8px">${esc(p.note)}</div>` : ''}<div class="models-out" data-mo="${esc(id)}"></div>
       <div class="form three"><label>Tipo<select class="in" data-pf="${esc(id)}.type">${[['anthropic', 'anthropic'], ['openai', 'openai (compatible)'], ['claude-code', 'Claude Code (suscripción)'], ['mock', 'demo']].map(([k, l]) => `<option value="${k}" ${p.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       ${(p.baseUrl || '').includes('{account_id}') ? `<label>ID de cuenta<input type="text" data-pf="${esc(id)}.accountId" value="${esc(p.accountId || '')}" placeholder="Workers AI → Usar REST API → Account ID"></label>` : `<label>${p.type === 'claude-code' ? 'Ruta de claude.exe (vacío = automática)' : 'URL base'}<input type="text" data-pf="${esc(id)}.baseUrl" value="${esc(p.baseUrl)}"></label>`}
@@ -1273,6 +1290,7 @@ const CATALOG = [
   { id: 'vercel', name: 'Vercel', color: '#111111', letter: '▲', desc: 'Proyectos, despliegues, logs y dominios.', url: 'https://mcp.vercel.com', auth: 'oauth', agents: ['codigo'] },
   { id: 'notion', name: 'Notion', color: '#373530', letter: 'N', desc: 'Páginas y bases de datos de tu espacio.', url: 'https://mcp.notion.com/mcp', auth: 'oauth', agents: ['investigador', 'narrativa'] },
   { id: 'linear', name: 'Linear', color: '#5e6ad2', letter: 'L', desc: 'Issues, proyectos y ciclos.', url: 'https://mcp.linear.app/mcp', auth: 'oauth', agents: ['codigo'] },
+  { id: 'obsidian', name: 'Obsidian', desc: 'Tu bóveda de notas: buscar, leer y escribir notas con [[enlaces]] (local).', auth: 'vault', agents: ['investigador', 'narrativa', 'contenido', 'revisor'] },
   { id: 'elevenlabs', name: 'ElevenLabs', color: '#000000', letter: '11', desc: 'Tus voces, texto a voz, efectos de sonido y música.', auth: 'apikey', agents: ['audio'] },
   { id: 'gdrive', name: 'Google Drive', color: '#1a73e8', letter: 'D', desc: 'Archivos de Drive. Vista previa para desarrolladores de Google: requiere tu cliente OAuth de Google Cloud.', url: 'https://drivemcp.googleapis.com/mcp/v1', auth: 'google', agents: ['investigador'] },
   { id: 'gmail', name: 'Gmail', color: '#ea4335', letter: 'M', desc: 'Correo de Gmail. Vista previa para desarrolladores: requiere tu cliente OAuth.', url: 'https://gmailmcp.googleapis.com/mcp/v1', auth: 'google', agents: ['investigador'] },
@@ -1284,7 +1302,7 @@ async function setConnectors(body, cfg, save) {
   const servers = cfg.mcpServers || {};
   const status = Object.fromEntries(m.servers.map(s => [s.name, s]));
   const elKey = cfg.providers.elevenlabs?.apiKey;
-  const isOn = c => c.auth === 'apikey' ? !!elKey : !!servers[c.id] && (servers[c.id].oauth || servers[c.id].token || servers[c.id].tokenCommand || c.auth === 'none');
+  const isOn = c => c.auth === 'vault' ? !!cfg.obsidianVault : c.auth === 'apikey' ? !!elKey : !!servers[c.id] && (servers[c.id].oauth || servers[c.id].token || servers[c.id].tokenCommand || c.auth === 'none');
   const tile = c => brandTile(c.id, c.name, 38);
   const extra = Object.entries(servers).filter(([k]) => !CATALOG.some(c => c.id === k));
   body.innerHTML = `<section class="block"><h2>Conectores</h2><p>Dale a tus agentes acceso a tus herramientas y datos. Usan el estándar MCP, igual que los conectores de Claude. Las acciones que cambian algo siguen el modo de permisos.</p>
@@ -1315,6 +1333,7 @@ async function setConnectors(body, cfg, save) {
     const id = b.dataset.off;
     if (!await ask('¿Desconectar? Se borran sus credenciales en faisp.', { ok: 'Desconectar', danger: true })) return;
     if (id === 'elevenlabs') { cfg.providers.elevenlabs.apiKey = ''; unassign('elevenlabs'); await save('Desconectado'); return reload(); }
+    if (id === 'obsidian') { cfg.obsidianVault = ''; unassign('obsidian'); await save('Obsidian desconectado'); return reload(); }
     await api('POST', `/api/mcp/${encodeURIComponent(id)}/disconnect`).catch(() => {});
     await loadState(); const c2 = structuredClone(S.st.config); delete c2.mcpServers[id]; for (const a of c2.agents) a.mcp = (a.mcp || []).filter(x => x !== id);
     await api('PUT', '/api/config', c2); await loadState(); toast('Desconectado'); reload();
@@ -1383,6 +1402,22 @@ function connectWizard(c, cfg, save, reload, assign) {
     if (!cancelled) body.insertAdjacentHTML('beforeend', '<div class="test bad">No se completó la autorización. Puedes cerrar y volver a intentarlo.</div>');
   };
 
+  if (c.auth === 'vault') {
+    api('GET', '/api/obsidian/vaults').then(({ vaults }) => {
+      const o = modal('', head + (vaults.length ? `<p>Bóvedas encontradas en este PC:</p><div class="choice">${vaults.map((v, i) => `<label class="opt"><input type="radio" name="vlt" value="${esc(v.path)}" ${i === 0 ? 'checked' : ''}><div><b>${esc(v.name)}</b><span class="mono">${esc(v.path)}</span></div></label>`).join('')}</div>`
+        : '<p class="muted">No encontré Obsidian en este PC. Puedes elegir cualquier carpeta de notas Markdown (una bóveda de Obsidian es eso: una carpeta).</p>')
+        + `<div class="row" style="margin-top:8px"><button class="btn sm" id="vPick">${ico('folder', 13)} Elegir otra carpeta…</button><span class="mono muted" id="vPicked" style="font-size:12px"></span></div>
+        <p class="muted" style="font-size:12.5px">Las notas se leen y escriben directamente en tu disco (no salen de tu PC salvo lo que el agente envíe al modelo). Las escrituras siguen el modo de permisos y guardan copia.</p>`,
+        [{ label: 'Cancelar' }, { label: 'Conectar', cls: 'primary', run: async o => {
+          const picked = o.querySelector('#vPicked').dataset.path || o.querySelector('input[name=vlt]:checked')?.value;
+          if (!picked) throw new Error('Elige una bóveda o una carpeta');
+          cfg.obsidianVault = picked; assign('obsidian', c.agents); await save('Obsidian conectado'); reload();
+        } }]);
+      o.querySelector('header').remove();
+      o.querySelector('#vPick').onclick = async () => { const { path } = await api('POST', '/api/pick-folder'); if (path) { const e = o.querySelector('#vPicked'); e.textContent = path; e.dataset.path = path; o.querySelectorAll('input[name=vlt]').forEach(r => r.checked = false); } };
+    });
+    return;
+  }
   if (c.auth === 'apikey') {
     const o = modal('', head + `<ol class="steps"><li>Abre <a href="${CONNECT_HELP.elevenlabs.keyUrl}" target="_blank" rel="noopener">tus claves de ElevenLabs</a> y crea una (con permiso de voces, texto a voz, efectos y música).</li><li>Pégala aquí:</li></ol>
       <div class="form"><div class="keybox"><input type="password" id="wKey" placeholder="sk_…" autocomplete="off"><button type="button" class="icon-btn" id="wEye">${ico('eye', 15)}</button></div><div id="wOut"></div></div>`,

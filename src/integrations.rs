@@ -102,6 +102,17 @@ pub fn link_audio(cfg: &mut Config) {
     }
 }
 
+/// Bóvedas de Obsidian registradas en este PC (%APPDATA%/obsidian/obsidian.json).
+pub fn obsidian_vaults() -> Vec<serde_json::Value> {
+    let Some(f) = dirs::config_dir().map(|d| d.join("obsidian").join("obsidian.json")) else { return vec![] };
+    let Ok(t) = std::fs::read_to_string(f) else { return vec![] };
+    let Ok(v) = serde_json::from_str::<Value>(&t) else { return vec![] };
+    v["vaults"].as_object().map(|o| o.values().filter_map(|x| {
+        let p = x["path"].as_str()?;
+        Some(serde_json::json!({"path": p, "name": Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), "open": x["open"].as_bool().unwrap_or(false)}))
+    }).collect()).unwrap_or_default()
+}
+
 /// Busca un ejecutable en el PATH (y la carpeta global de npm en Windows).
 pub fn find_on_path(names: &[&str]) -> Option<PathBuf> {
     let mut dirs_: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();

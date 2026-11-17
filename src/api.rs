@@ -742,6 +742,8 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/window/open", post(window_open))
         .route("/api/pick-file", post(pick_file))
         .route("/api/grammar", post(grammar))
+        .route("/api/obsidian/vaults", get(obsidian_vaults))
+        .route("/mcp/{token}", post(mcp_bridge))
         .route("/api/providers/{id}/key", get(provider_key))
         .route("/api/claude/limits/refresh", post(claude_limits_refresh))
         .route("/api/cli/codex/login", post(codex_login))
@@ -1093,4 +1095,32 @@ async fn grammar(State(st): St, Json(b): Json<GrammarBody>) -> ApiResult {
         "type": m["rule"]["issueType"], "rule": m["rule"]["id"],
     })).collect();
     Ok(Json(json!({"matches": matches, "language": v["language"]["detectedLanguage"]["name"]})))
+}
+
+async fn obsidian_vaults() -> Json<Value> {
+    Json(json!({"vaults": crate::integrations::obsidian_vaults()}))
+}
+
+/// Servidor MCP mínimo (solo 127.0.0.1) con las herramientas propias de faisp para un paso concreto.
+async fn mcp_bridge(State(st): St, Path(token): Path<String>, Json(msg): Json<Value>) -> Response {
+    let entry = st.bridge.lock().unwrap().get(&token).cloned();
+    let Some((specs, exec)) = entry else { return (StatusCode::NOT_FOUND, "sesión MCP caducada").into_response() };
+    let id = msg.get("id").cloned();
+    let method = msg["method"].as_str().unwrap_or("");
+    let Some(id) = id else { return StatusCode::ACCEPTED.into_response() }; // notificaciones
+    let result = match method {
+        "initialize" => json!({"protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"), "capabilities": {"tools": {}}, "serverInfo": {"name": "faisp", "version": env!("CARGO_PKG_VERSION")}}),
+        "ping" => json!({}),
+        "tools/list" => json!({"tools": specs.iter().map(|t| json!({"name": t["name"], "description": t["description"], "inputSchema": t["input_schema"]})).collect::<Vec<_>>()}),
+        "tools/call" => {
+            let name = msg["params"]["name"].as_str().unwrap_or("").to_string();
+            if !specs.iter().any(|t| t["name"] == name.as_str()) {
+                return Json(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": "Herramienta desconocida"}})).into_response();
+            }
+            let out = exec(name, msg["params"]["arguments"].clone()).await;
+            json!({"content": [{"type": "text", "text": out}], "isError": false})
+        }
+        _ => return Json(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Método no soportado"}})).into_response(),
+    };
+    Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
 }

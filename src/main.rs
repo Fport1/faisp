@@ -113,6 +113,7 @@ async fn start_server(a: &Args, data: std::path::PathBuf) -> anyhow::Result<Opti
     let port = listener.local_addr()?.port();
     let url = format!("http://127.0.0.1:{port}");
     let st = orchestrator::AppState::load(data.clone());
+    st.port.store(port, Ordering::Relaxed);
     {
         let st = st.clone();
         tokio::spawn(async move {

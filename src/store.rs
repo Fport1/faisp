@@ -221,6 +221,8 @@ pub struct Config {
     pub skill_dirs: Vec<SkillDirCfg>,
     pub profile: Profile,
     pub defaults: Defaults,
+    /// Carpeta de la bóveda de Obsidian conectada (vacío = sin conectar)
+    pub obsidian_vault: String,
 }
 
 // ---------------- Datos ----------------
