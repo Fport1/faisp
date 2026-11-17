@@ -13,6 +13,12 @@ const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } ca
 // ---------- Iconos (línea, 24px, estilo Lucide) ----------
 const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01" stroke-width="2.6"/>',
+  terminal: '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7.5 10 3 2.5-3 2.5M12.5 15h4"/>',
+  diff: '<path d="M12 4v7M8.5 7.5h7M8.5 17h7"/><rect x="4" y="2.5" width="16" height="19" rx="2.5"/>',
+  dots: '<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>',
+  arrowLeft: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  branch: '<circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="7.5" r="2"/><path d="M6 7.5v9M18 9.5c0 4-6 3-11 7"/>',
   chat: '<path d="M21 12a8.5 8.5 0 0 1-12.3 7.6L3.5 21l1.3-4.6A8.5 8.5 0 1 1 21 12z"/>',
   folder: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.2h7.5A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>',
   layers: '<path d="M12 3.5 21 8l-9 4.5L3 8z"/><path d="m3 12.5 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/>',
@@ -159,6 +165,8 @@ async function api(method, url, body) {
   const t = await r.text();
   return t ? JSON.parse(t) : null;
 }
+// Sin corrector del navegador (Edge): faisp tiene el suyo
+document.addEventListener('focusin', e => { const t = e.target; if (t?.matches?.('input, textarea, [contenteditable]')) t.spellcheck = false; });
 function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
 
 // ---------- Markdown ----------
@@ -177,7 +185,7 @@ marked.use({
     },
   },
 });
-const md = text => DOMPurify.sanitize(marked.parse(text || ''), { ADD_ATTR: ['target'] });
+const md = text => DOMPurify.sanitize(marked.parse(text || ''), { ADD_ATTR: ['target'] }).replace(/<code>([\w.\/\\-]+\.[A-Za-z0-9]{1,8})<\/code>/g, (m, p) => `<code class="fpath" data-fpath="${p}" title="Abrir ${p}">${p}</code>`);
 
 // ---------- Estado global ----------
 async function loadState() {
@@ -321,6 +329,8 @@ function modal(title, bodyHtml, buttons = []) {
 
 // ---------- Router de vistas ----------
 function render() {
+  // Al salir del chat que trabaja se deja de mirar (el trabajo sigue); al volver se reengancha
+  if (S.streaming && (S.view !== 'chat' || S.chatId !== S.streamChatId)) detachStream();
   S.code = [];
   const v = $('#view');
   $('#composerWrap').innerHTML = '';
@@ -339,6 +349,13 @@ async function openChat(id) {
   if (S.chat.projectId && S.chat.projectId !== S.projectId) { S.projectId = S.chat.projectId; store.set('projectId', S.projectId); }
   await refreshArtifacts();
   renderSidebar(); render();
+  if (S.streamChatId === id) return;
+  // ¿Sigue trabajando? Volver a verlo en directo desde donde va
+  const runs = await api('GET', '/api/runs').catch(() => null);
+  const r = runs?.running?.find(x => x.chatId === id);
+  if (S.chatId !== id || S.view !== 'chat') return;
+  if (r) streamChat(id, signal => fetch(`/api/chats/${id}/live`, { signal }), r.startedAt);
+  else runQueue(id);
 }
 
 async function refreshArtifacts() {
@@ -366,6 +383,7 @@ function renderChat() {
   const chs = S.chat.chapters || [];
   v.innerHTML = `${chs.length ? `<div class="chapters">${ico('book', 13)} ${chs.map(c => `<button class="chip" data-goch="${esc(c.messageId)}">${esc(c.title)}</button>`).join('')}</div>` : ''}<div class="thread" id="thread">${S.chat.messages.map(renderMessage).join('')}</div><button class="jump" id="jumpBtn" title="Ir al final">${ico('chevron', 16)}</button>`;
   wireScroll(v);
+  if (S.streaming && S.streamChatId === S.chatId && S.liveEl) $('#thread').appendChild(S.liveEl);
   $('#composerWrap').appendChild(composer());
   drawLimitBanner();
   $('#composerWrap').insertAdjacentHTML('beforeend', '<div class="hint">El orquestador reparte la tarea entre agentes. Revisa los cambios antes de aplicarlos.</div>');
@@ -373,22 +391,25 @@ function renderChat() {
 }
 
 function drawLimitBanner() {
-  $$('.limit-banner').forEach(e => e.remove());
-  const info = S.limits?.info; if (!info) return;
+  $$('.limit-note.lim').forEach(e => e.remove());
+  const info = normLimits(S.limits?.info); if (!info) return;
   const w = info.unifiedWindows || {};
-  const hot = Object.entries(w).filter(([, v]) => (v.utilization || 0) >= 0.7).sort((a, b) => b[1].utilization - a[1].utilization)[0];
-  if (info.status !== 'rejected' && info.status !== 'allowed_warning' && !hot) return;
-  const type = hot ? hot[0] : info.rateLimitType, win = hot ? hot[1] : info;
+  const hot = Object.entries(w).filter(([, v]) => (v.utilization || 0) >= 0.8 && v.resetsAt).sort((a, b) => b[1].utilization - a[1].utilization)[0];
+  const rejected = info.status === 'rejected';
+  if (!rejected && !hot) return;
+  const type = rejected ? info.rateLimitType : hot[0], win = rejected ? info : hot[1];
   const key = type + ':' + win.resetsAt;
   if (store.get('limitBannerHidden', '') === key) return;
   const what = type === 'five_hour' ? 'de la sesión' : 'semanal';
   const d = win.resetsAt ? new Date(win.resetsAt * 1000) : null;
-  const when = d ? d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '';
-  const html = `<div class="limit-banner ${info.status === 'rejected' ? 'bad' : ''}">${ico('clock', 15)}<b>${info.status === 'rejected' ? 'Has alcanzado el límite de uso ' + what : 'Acercándose al límite de uso ' + what}</b><span class="muted">${when ? 'Se restablece el ' + when : ''} · ${Math.round((win.utilization || 0) * 100)} %</span><span style="flex:1"></span><button class="btn sm" data-lb="usage">Ver uso</button><button class="icon-btn" data-lb="x" title="Ocultar">${ico('x', 14)}</button></div>`;
+  const hm = d ? d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '';
+  const when = d ? (d.toDateString() === new Date().toDateString() ? 'a las ' + hm : 'el ' + d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric' }) + ' a las ' + hm) : '';
+  const pct = Math.round((win.utilization || 0) * 100);
+  const html = `<div class="limit-note lim ${rejected ? 'bad' : ''}">${ico('clock', 13)}<span>${rejected ? 'Límite ' + what + ' alcanzado' : 'Llevas el ' + pct + ' % del límite ' + what}${when ? ' · se restablece ' + when : ''}</span><button class="lnk" data-lb="usage">Ver uso</button><button class="icon-btn" data-lb="x" title="Ocultar">${ico('x', 12)}</button></div>`;
   const host = $('#homeComposer') || $('#composerWrap');
   if (!host) return;
   host.insertAdjacentHTML('afterbegin', html);
-  const b = $('.limit-banner');
+  const b = $('.limit-note.lim');
   $('[data-lb=usage]', b).onclick = () => { S.view = 'settings'; S.settingsTab = 'usage'; renderSidebar(); render(); };
   $('[data-lb=x]', b).onclick = () => { store.set('limitBannerHidden', key); b.remove(); };
 }
@@ -418,11 +439,11 @@ function artChip(id, title, version, applied) {
 }
 
 function renderStep(s, single, open = true) {
-  const tools = (s.tools || []).map(t => `<div class="tool-row">${ico('wrench', 13)} <b>${esc(t.name)}</b> ${esc(t.input)}</div>`).join('');
   const arts = (s.artifacts || []).map(id => { const a = S.artifacts.find(x => x.id === id); return a ? artChip(a.id, a.title, a.versions, a.appliedVersion) : ''; }).join('');
+  const has = s.text || s.timeline?.length || s.tools?.length;
   return `<div class="step ${single ? 'single' : ''} ${open ? '' : 'closed'}" data-step="${esc(s.id)}">
     <div class="step-head">${agentBadge(s.agentId, s.model)}<span class="meta">${s.effort ? `<span class="chip effchip">${esc(EFFORT_NAMES[s.effort] || s.effort)}</span>` : ''}${usageMeta(s.usage)}${single ? '' : '<span class="caret">' + ico('chevron', 14) + '</span>'}</span></div>
-    <div class="step-body">${!single && s.task ? `<div class="step-task">${esc(s.task.slice(0, 400))}</div>` : ''}<div class="tools">${tools}</div><div class="md ${s.error ? 'err' : ''}">${md(s.text)}</div><div class="changes-box">${changesHtml(s.changes)}</div>${arts ? `<div class="art-chips">${arts}</div>` : ''}</div></div>`;
+    <div class="step-body">${!single && s.task ? `<div class="step-task">${esc(s.task.slice(0, 400))}</div>` : ''}<div class="tools"></div><div class="flow">${has ? stepFlow(s) : ''}</div>${arts ? `<div class="art-chips">${arts}</div>` : ''}</div></div>`;
 }
 
 const EFFORT_NAMES = { low: 'bajo', medium: 'medio', high: 'alto', xhigh: 'muy alto', max: 'máximo' };
@@ -459,7 +480,7 @@ function renderMessage(m) {
   const steps = m.steps || [];
   if (!steps.length) return `${chapterMark(m)}<div class="msg-ai" data-msg="${esc(m.id || '')}"><div class="step single"><div class="step-head">${agentBadge('orquestador')}<span class="meta">${usageMeta(m.planUsage)}</span></div><div class="md">${md(m.content)}</div></div>${msgActions(m)}</div>`;
   const plan = steps.length > 1 ? `<div class="plan-line">Plan: ${steps.map(s => `${agentIcon(agentById(s.agentId), 14)} ${esc(s.agentName)}`).join(' <span class="arrow">→</span> ')}${m.planUsage ? ` · <span title="Planificación">${usageMeta(m.planUsage)}</span>` : ''}</div>` : '';
-  return `${chapterMark(m)}<div class="msg-ai" data-msg="${esc(m.id || '')}">${plan}${steps.map(s => renderStep(s, steps.length === 1, true)).join('')}${msgActions(m)}</div>`;
+  return `${chapterMark(m)}<div class="msg-ai" data-msg="${esc(m.id || '')}">${plan}${steps.map(s => renderStep(s, steps.length === 1, true)).join('')}${changesCard(steps)}${msgActions(m)}</div>`;
 }
 
 function composer() {
@@ -499,14 +520,16 @@ function composer() {
     ...ags.map(a => ({ label: `${agentIcon(a, 16)}<div><div>${esc(a.name)}</div><div class="sub">${esc(a.model)}</div></div>`, run: () => { S.agent = a.id; drawPick(); } })),
   ]);
   ta.value = loadDraft().text || ''; setTimeout(() => autosize(ta), 0);
-  ta.addEventListener('input', () => { autosize(ta); sendBtn.disabled = !S.streaming && !ta.value.trim(); saveDraft(); });
+  ta.addEventListener('input', () => { autosize(ta); updateSendBtn(); saveDraft(); });
+  pick.addEventListener('redraw', drawPick);
   ta.addEventListener('paste', e => { const files = [...(e.clipboardData?.files || [])]; if (files.length) { e.preventDefault(); files.forEach(uploadAndAttach); } });
   wrap.addEventListener('dragover', e => { e.preventDefault(); wrap.classList.add('drop'); });
   wrap.addEventListener('dragleave', () => wrap.classList.remove('drop'));
   wrap.addEventListener('drop', e => { e.preventDefault(); wrap.classList.remove('drop'); [...(e.dataTransfer?.files || [])].forEach(uploadAndAttach); });
+  setupPop(ta, wrap);
   setupSpell(ta, $('#taMirror', wrap));
-  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!S.streaming) send(); } });
-  sendBtn.disabled = !S.streaming;
+  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  setTimeout(updateSendBtn, 0);
   sendBtn.onclick = () => S.streaming && !ta.value.trim() ? stopStream() : send();
   wrap.insertAdjacentHTML('afterbegin', '<div id="queueBox"></div>');
   setTimeout(() => { renderQueue(); updateContext(); }, 0);
@@ -565,23 +588,35 @@ async function updateContext() {
   } catch { chip.classList.add('hidden'); }
 }
 function wireScroll(v) {
+  // Solo se pega al final si tú estás al final: en cuanto subes (rueda, barra o teclado) te deja leer
   const jump = $('#jumpBtn');
-  const at = () => v.scrollHeight - v.scrollTop - v.clientHeight < 60;
-  v.onscroll = () => { S.autoStick = at(); jump?.classList.toggle('show', !S.autoStick); };
-  v.onwheel = e => { if (e.deltaY < 0) { S.autoStick = false; jump?.classList.add('show'); } };
-  if (jump) jump.onclick = () => { S.autoStick = true; v.scrollTop = v.scrollHeight; jump.classList.remove('show'); };
+  let lastTop = v.scrollTop;
+  const at = () => v.scrollHeight - v.scrollTop - v.clientHeight < 40;
+  const release = () => { S.autoStick = false; jump?.classList.add('show'); };
+  v.onscroll = () => {
+    const t = v.scrollTop;
+    if (t < lastTop - 1) release(); else if (at()) S.autoStick = true;
+    lastTop = t; jump?.classList.toggle('show', !S.autoStick);
+  };
+  v.onwheel = e => { if (e.deltaY < 0) release(); };
+  v.onmousedown = e => { if (e.target === v && e.offsetX > v.clientWidth - 2) release(); };
+  v.onkeydown = e => { if (['PageUp', 'ArrowUp', 'Home'].includes(e.key)) release(); };
+  if (jump) jump.onclick = () => { S.autoStick = true; v.scrollTop = v.scrollHeight; lastTop = v.scrollTop; jump.classList.remove('show'); };
 }
 
 function curMode() { return S.mode || S.st?.config?.defaults?.mode || 'auto'; }
 // ---------- Corrector (estilo Google Docs) ----------
 function setupSpell(ta, mirror) {
-  let matches = [], timer, seq = 0;
-  const ignored = () => { try { return JSON.parse(store.get('spellIgnore', '[]')); } catch { return []; } };
+  // Como Google Docs: subrayado rojo (ortografía) o azul (gramática/estilo) que se mantiene mientras
+  // escribes; al pasar el ratón por encima sale una tarjeta con la corrección: Tab la acepta.
+  let matches = [], timer, seq = 0, prev = ta.value, card = null, cardIdx = -1, hideT;
+  const ignKey = () => 'spellIgnore:' + (S.chatId || 'new:' + (S.projectId || ''));
+  const ignored = () => { try { return JSON.parse(store.get(ignKey(), '[]')); } catch { return []; } };
   const on = () => S.st?.config?.profile?.spellcheck !== false;
   const draw = () => {
     const t = ta.value; let html = '', last = 0;
     matches.forEach((m, i) => {
-      if (m.offset < last) return;
+      if (m.offset < last || m.offset + m.length > t.length) return;
       html += esc(t.slice(last, m.offset)) + `<mark class="${m.type === 'misspelling' ? 'gerr' : 'gstyle'}" data-i="${i}">${esc(t.slice(m.offset, m.offset + m.length))}</mark>`;
       last = m.offset + m.length;
     });
@@ -590,30 +625,80 @@ function setupSpell(ta, mirror) {
   };
   const check = async () => {
     const my = ++seq, text = ta.value;
-    if (!on() || text.trim().length < 4) { matches = []; draw(); return; }
+    if (!on() || text.trim().length < 3) { matches = []; draw(); return; }
     try {
       const r = await api('POST', '/api/grammar', { text, language: S.st.config.profile?.spellLang || 'auto' });
       if (my !== seq || ta.value !== text) return;
       const ig = ignored();
       matches = r.matches.filter(m => !ig.includes(text.slice(m.offset, m.offset + m.length).toLowerCase()));
       draw();
-    } catch { /* sin conexión o límite: no molestar */ }
+    } catch { /* sin conexión o límite: se conservan los subrayados que ya había */ }
   };
-  ta.addEventListener('input', () => { matches = []; draw(); clearTimeout(timer); timer = setTimeout(check, 900); });
-  ta.addEventListener('scroll', () => { mirror.scrollTop = ta.scrollTop; });
-  const suggest = () => {
-    const p = ta.selectionStart; const i = matches.findIndex(m => p >= m.offset && p <= m.offset + m.length);
-    if (i < 0 || ta.selectionEnd !== p) return;
-    const m = matches[i]; const mark = mirror.querySelector(`[data-i="${i}"]`); if (!mark) return;
+  // Al escribir no se borra nada: los subrayados se desplazan; solo cae el de la palabra que tocas
+  const shift = () => {
+    const a = prev, b = ta.value; prev = b;
+    let s = 0; while (s < a.length && s < b.length && a[s] === b[s]) s++;
+    let e = 0; while (e < a.length - s && e < b.length - s && a[a.length - 1 - e] === b[b.length - 1 - e]) e++;
+    const endOld = a.length - e, delta = b.length - a.length;
+    matches = matches.filter(m => m.offset + m.length <= s || m.offset >= endOld).map(m => m.offset >= endOld ? { ...m, offset: m.offset + delta } : m);
+  };
+  const hideCard = () => { cardIdx = -1; card?.classList.add('hidden'); };
+  const hideSoon = () => { clearTimeout(hideT); hideT = setTimeout(hideCard, 280); };
+  const apply = (i, v) => {
+    const m = matches[i]; if (!m) return;
+    matches.splice(i, 1);
+    ta.value = ta.value.slice(0, m.offset) + v + ta.value.slice(m.offset + m.length);
+    ta.focus(); ta.selectionStart = ta.selectionEnd = m.offset + v.length;
+    hideCard(); ta.dispatchEvent(new Event('input'));
+  };
+  const ignore = word => {
+    const ig = ignored(); if (!ig.includes(word)) ig.push(word); store.set(ignKey(), JSON.stringify(ig));
+    matches = matches.filter(m => ta.value.slice(m.offset, m.offset + m.length).toLowerCase() !== word);
+    draw(); hideCard(); ta.focus();
+  };
+  const showCard = (i, rect) => {
+    const m = matches[i]; if (!m || !rect) return;
+    clearTimeout(hideT); cardIdx = i;
+    if (!card) {
+      card = document.createElement('div'); card.className = 'spell-card hidden'; document.body.appendChild(card);
+      card.onmouseenter = () => clearTimeout(hideT); card.onmouseleave = hideSoon;
+      card.onmousedown = e => e.preventDefault();
+    }
     const word = ta.value.slice(m.offset, m.offset + m.length);
-    const apply = v => { ta.value = ta.value.slice(0, m.offset) + v + ta.value.slice(m.offset + m.length); ta.focus(); ta.selectionStart = ta.selectionEnd = m.offset + v.length; ta.dispatchEvent(new Event('input')); };
-    const items = [{ label: `<div class="sub wrap" style="max-width:320px">${esc(m.message)}</div>`, run: () => {} }, '-'];
-    m.replacements.forEach(r => items.push({ label: `<b>${esc(r)}</b>`, run: () => apply(r) }));
-    if (m.type === 'misspelling') items.push('-', { label: ico('x', 14) + ' Ignorar «' + esc(word) + '»', run: () => { const ig = ignored(); ig.push(word.toLowerCase()); store.set('spellIgnore', JSON.stringify(ig)); matches.splice(i, 1); draw(); } });
-    menu(mark, items);
+    const reps = (m.replacements || []).slice(0, 3);
+    card.innerHTML = `<div class="sc-top">${reps.length ? reps.map((r, k) => `<button class="sc-rep ${k ? '' : 'first'}" data-r="${esc(r)}">${esc(r)}</button>`).join('') : '<span class="muted" style="font-size:13px">Sin sugerencias</span>'}<span style="flex:1"></span><button class="sc-ign" title="No volver a marcar «${esc(word)}» en este chat">Ignorar</button></div><div class="sc-msg">${esc(m.message || '')}</div>${reps.length ? '<div class="sc-hint"><kbd>Tab</kbd> acepta la primera</div>' : ''}`;
+    $$('.sc-rep', card).forEach(b => b.onclick = () => apply(i, b.dataset.r));
+    $('.sc-ign', card).onclick = () => ignore(word.toLowerCase());
+    card.classList.remove('hidden');
+    const w = card.offsetWidth, h = card.offsetHeight;
+    card.style.left = Math.max(8, Math.min(rect.left, innerWidth - w - 8)) + 'px';
+    card.style.top = (rect.bottom + 6 + h > innerHeight ? rect.top - h - 6 : rect.bottom + 6) + 'px';
   };
-  ta.addEventListener('click', suggest);
-  ta.addEventListener('keydown', e => { if (e.ctrlKey && e.key === ' ') { e.preventDefault(); suggest(); } });
+  const markRect = i => mirror.querySelector(`mark[data-i="${i}"]`)?.getClientRects()[0];
+  const hitAt = (x, y) => {
+    for (const mk of mirror.querySelectorAll('mark')) for (const r of mk.getClientRects()) if (x >= r.left && x <= r.right && y >= r.top - 2 && y <= r.bottom + 3) return { i: +mk.dataset.i, rect: r };
+    return null;
+  };
+  const atCaret = () => { const p = ta.selectionStart; if (ta.selectionEnd !== p) return -1; return matches.findIndex(m => p >= m.offset && p <= m.offset + m.length); };
+  ta.addEventListener('input', () => { shift(); draw(); if (cardIdx >= 0) hideCard(); clearTimeout(timer); timer = setTimeout(check, 650); });
+  ta.addEventListener('scroll', () => { mirror.scrollTop = ta.scrollTop; hideCard(); });
+  ta.addEventListener('mousemove', e => {
+    const h = hitAt(e.clientX, e.clientY);
+    if (h) { if (h.i !== cardIdx || card?.classList.contains('hidden')) showCard(h.i, h.rect); else clearTimeout(hideT); }
+    else if (cardIdx >= 0) hideSoon();
+  });
+  ta.addEventListener('mouseleave', () => { if (cardIdx >= 0) hideSoon(); });
+  ta.addEventListener('click', () => { const i = atCaret(); if (i >= 0) showCard(i, markRect(i)); });
+  ta.addEventListener('blur', hideSoon);
+  ta.addEventListener('keydown', e => {
+    const shown = cardIdx >= 0 && card && !card.classList.contains('hidden');
+    if (e.key === 'Tab' && !e.shiftKey) {
+      const i = shown ? cardIdx : atCaret();
+      if (i >= 0 && matches[i]?.replacements?.length) { e.preventDefault(); e.stopImmediatePropagation(); apply(i, matches[i].replacements[0]); }
+    } else if (e.key === 'Escape' && shown) { e.preventDefault(); hideCard(); }
+    else if (e.ctrlKey && e.key === ' ') { e.preventDefault(); const i = atCaret(); if (i >= 0) showCard(i, markRect(i)); }
+  });
+  if (ta.value.trim()) check();
 }
 
 function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 280) + 'px'; }
@@ -644,13 +729,38 @@ $('#chatTitle').addEventListener('change', async e => {
 
 function stopStream() { if (S.chat?.id) api('POST', `/api/chats/${S.chat.id}/stop`).catch(() => {}); }
 
+// ---------- Envío y trabajo en vivo (se puede salir y volver: se reengancha) ----------
+const SPIN_FR = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
+let streamSeq = 0;
+function detachStream() { streamSeq++; S.abort?.abort(); S.abort = null; S.streaming = false; S.streamChatId = null; S.liveEl = null; }
+
+function updateSendBtn() {
+  const b = $('#sendBtn'), ta = $('#prompt'); if (!b || !ta) return;
+  const has = !!ta.value.trim(); const stop = S.streaming && !has;
+  b.classList.toggle('stop', stop);
+  b.innerHTML = stop ? ico('stop', 14) : ico('arrowUp', 17, 2.2);
+  b.title = stop ? 'Detener' : S.streaming ? 'Poner en cola: se envía al terminar (o pulsa «Enviar ahora»)' : 'Enviar';
+  b.disabled = !S.streaming && !has;
+}
+
+function runQueue(chatId) {
+  const qi = S.queue.findIndex(q => q.chatId === chatId);
+  if (qi < 0 || S.chatId !== chatId || S.view !== 'chat' || S.streaming) return;
+  const q = S.queue.splice(qi, 1)[0]; renderQueue();
+  setTimeout(() => send(q.text, q.attachments), 150);
+}
+
 async function send(override, overrideAtt) {
   const ta = $('#prompt'); const text = (override ?? ta?.value ?? '').trim();
   if (!text) return;
+  const cmd = override == null && SLASH.find(c => text === '/' + c.c);
+  if (cmd) { ta.value = ''; autosize(ta); clearDraft(); updateSendBtn(); cmd.run(); return; }
   if (S.streaming) {
     // Como en Claude: lo que escribes mientras trabaja queda en cola y se envía al terminar
     S.queue.push({ text, attachments: [...S.attachments], chatId: S.chatId });
-    if (ta) ta.value = ''; S.attachments = []; renderAttachments(); clearDraft(); renderQueue();
+    if (ta) { ta.value = ''; autosize(ta); }
+    S.attachments = []; renderAttachments(); clearDraft(); renderQueue(); updateSendBtn();
+    toast('En cola: se enviará cuando termine');
     return;
   }
   if (!S.chat) {
@@ -661,28 +771,70 @@ async function send(override, overrideAtt) {
   S.chat.messages.push({ role: 'user', content: text, attachments, mode: curMode() });
   S.attachments = [];
   clearDraft();
-  S.streaming = true; S.autoStick = true; S.planStatus = {};
+  const id = S.chat.id;
+  const body = JSON.stringify({ text, agentId: S.agent, attachments, mode: curMode(), effort: S.effort === 'agent' ? '' : S.effort });
+  streamChat(id, signal => fetch(`/api/chats/${id}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal }));
+}
+
+async function streamChat(chatId, open, startedAt) {
+  detachStream();
+  const my = streamSeq;
+  S.streaming = true; S.streamChatId = chatId; S.autoStick = true; S.planStatus = {};
   render();
-  const thread = $('#thread');
-  const live = document.createElement('div'); live.className = 'msg-ai';
-  live.innerHTML = `<div class="status-line" id="liveStatus"><svg class="spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg><span>Pensando…</span></div>`;
+  const thread = $('#thread'); if (!thread) return;
+  const live = document.createElement('div'); live.className = 'msg-ai live';
+  live.innerHTML = `<div class="status-line" id="liveStatus"><span class="spin">✻</span><span class="verb">Pensando…</span><span class="st-meta"></span></div>`;
   thread.appendChild(live);
+  S.liveEl = live;
   const view = $('#view');
-  const stick = () => { if (S.autoStick) view.scrollTop = view.scrollHeight; };
+  const stick = () => { if (S.autoStick && S.liveEl === live && live.isConnected) view.scrollTop = view.scrollHeight; };
   stick();
 
-  const steps = {}; // stepId -> {el, text, dirty}
-  let single = false;
-  const flush = () => { for (const s of Object.values(steps)) if (s.dirty) { $('.md', s.el).innerHTML = md(s.text); s.dirty = false; } stick(); };
-  const timer = setInterval(flush, 70);
-  const status = t => { const st = $('#liveStatus span', live); if (st) st.textContent = t; };
+  const steps = {};
+  let single = false, outChars = 0, lastAt = Date.now(), lastKind = '', verb = 'Pensando', fr = 0;
+  const t0 = startedAt ? new Date(startedAt).getTime() : Date.now();
+  const who = s => (single || !s ? '' : s.name + ': ');
+  const setVerb = (v, kind) => { verb = v; lastKind = kind || ''; lastAt = Date.now(); };
+  const seg = (s, kind) => {
+    let last = s.segs[s.segs.length - 1];
+    if (!last || last.kind !== kind) {
+      const el = document.createElement('div');
+      if (kind === 'text') el.className = 'md seg';
+      else { el.className = 'act on'; el.innerHTML = '<button class="act-sum"></button><div class="act-list"></div>'; }
+      $('.flow', s.el).appendChild(el);
+      s.segs.forEach(g => g.el.classList.remove('on'));
+      last = { kind, el, text: '', items: [], dirty: true }; s.segs.push(last);
+    }
+    return last;
+  };
+  const drawAct = (s, g) => { $('.act-sum', g.el).innerHTML = `<span class="act-spin"></span>${actSummary(g.items, s.changes)} <span class="act-time"></span><span class="chev">${ico('chevron', 13)}</span>`; $('.act-list', g.el).innerHTML = g.items.map(actItem).join(''); };
+  const fmtEl = ms => { const x = Math.max(0, Math.floor(ms / 1000)); return x < 60 ? x + ' s' : Math.floor(x / 60) + ' min ' + String(x % 60).padStart(2, '0') + ' s'; };
+  const flush = () => {
+    for (const s of Object.values(steps)) for (const g of s.segs) if (g.dirty && g.kind === 'text') { g.el.innerHTML = md(g.text); g.dirty = false; }
+    for (const s of Object.values(steps)) for (const g of s.segs) if (g.kind === 'tools' && g.el.classList.contains('on')) {
+      const sp = $('.act-spin', g.el); if (sp) sp.textContent = SPIN_FR[fr % SPIN_FR.length];
+      const tm = $('.act-time', g.el); const ms = Date.now() - (g.t0 || Date.now()); if (tm) tm.textContent = ms > 1500 ? fmtEl(ms) : '';
+    }
+    const stEl = $('#liveStatus', live);
+    if (stEl) {
+      const quiet = Date.now() - lastAt;
+      const v = quiet > 6000 && (lastKind === 'text' || lastKind === 'tool') ? 'Pensando' : verb;
+      $('.spin', stEl).textContent = SPIN_FR[fr++ % SPIN_FR.length];
+      $('.verb', stEl).textContent = v + '…';
+      const running = Object.values(steps).filter(s => !s.done).length;
+      $('.st-meta', stEl).textContent = `(${running > 1 ? running + ' agentes a la vez · ' : ''}${fmtEl(Date.now() - t0)}${outChars ? ' · ↓ ' + fmtTok(Math.round(outChars / 4)) + ' tokens' : ''})`;
+    }
+    stick();
+  };
+  const timer = setInterval(flush, 110);
 
-  S.abort = new AbortController();
+  const ac = new AbortController(); S.abort = ac;
   try {
-    const res = await fetch(`/api/chats/${S.chat.id}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, agentId: S.agent, attachments, mode: curMode(), effort: S.effort === 'agent' ? '' : S.effort }), signal: S.abort.signal });
+    const res = await open(ac.signal);
     if (!res.ok) throw new Error(await res.text());
     const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
     for (;;) {
+      if (my !== streamSeq) { ac.abort(); break; }
       const { value, done } = await reader.read(); if (done) break;
       buf += dec.decode(value, { stream: true });
       let i;
@@ -690,81 +842,439 @@ async function send(override, overrideAtt) {
         const raw = buf.slice(0, i); buf = buf.slice(i + 2);
         let ev = 'message', data = '';
         for (const line of raw.split('\n')) { if (line.startsWith('event:')) ev = line.slice(6).trim(); else if (line.startsWith('data:')) data += line.slice(5).trim(); }
-        if (!data) continue;
-        const d = JSON.parse(data);
-        handle(ev, d);
+        if (!data || my !== streamSeq) continue;
+        try { handle(ev, JSON.parse(data)); } catch (e) { console.error(e); }
       }
     }
   } catch (err) {
-    if (err.name === 'AbortError') status('Dejé de mostrarlo aquí; el trabajo sigue y quedará guardado en el chat.');
-    else live.insertAdjacentHTML('beforeend', `<div class="err">${ico('alert', 14)} ${esc(err.message)}</div>`);
+    if (err.name !== 'AbortError' && my === streamSeq) live.insertAdjacentHTML('beforeend', `<div class="err">${ico('alert', 14)} ${esc(err.message)}</div>`);
   } finally {
-    clearInterval(timer); flush();
-    S.streaming = false; S.abort = null;
-    try {
-      S.chat = await api('GET', '/api/chats/' + S.chat.id);
-      await refreshArtifacts(); await loadState();
-    } catch {}
-    if (S.view === 'chat') render();
-    if (document.body.classList.contains('panel-open')) renderPanel();
-    // Siguiente mensaje en cola
-    const qi = S.queue.findIndex(q => q.chatId === S.chatId);
-    if (qi >= 0) { const q = S.queue.splice(qi, 1)[0]; renderQueue(); setTimeout(() => send(q.text, q.attachments), 150); }
+    clearInterval(timer);
+    if (my === streamSeq) {
+      flush();
+      S.streaming = false; S.abort = null; S.streamChatId = null; S.liveEl = null;
+      try { S.chat = S.chatId === chatId ? await api('GET', '/api/chats/' + chatId) : S.chat; await refreshArtifacts(); await loadState(); } catch {}
+      if (my === streamSeq) {
+        if (S.view === 'chat' && S.chatId === chatId) render();
+        if (document.body.classList.contains('panel-open')) renderPanel();
+        runQueue(chatId);
+      }
+    }
   }
 
+  function setPs(id, st) { const el = $(`[data-ps="${CSS.escape(id)}"]`, live); if (!el) return; el.className = 'todo ' + st; el.firstElementChild.outerHTML = st === 'completed' ? ico('check', 14) : '<span class="todo-c"></span>'; }
   function handle(ev, d) {
-    if (ev === 'status') status(d.text);
+    if (ev === 'idle') return;
+    if (ev === 'status') setVerb(String(d.text || '').replace(/…$/, ''), 'status');
     else if (ev === 'file_change') {
       const s = steps[d.stepId]; if (!s) return;
-      s.changes = s.changes || []; const c = s.changes.find(x => x.path === d.path);
+      const c = s.changes.find(x => x.path === d.path);
       if (c) { c.added += d.added; c.removed += d.removed; c.applied = c.applied || d.applied; } else s.changes.push({ path: d.path, added: d.added, removed: d.removed, applied: d.applied });
-      const box = $('.changes-box', s.el); if (box) box.innerHTML = changesHtml(s.changes);
-    } else if (ev === 'stopped') { status('Detenido.'); }
-    else if (ev === 'paused') { live.insertAdjacentHTML('beforeend', `<div class="limit-banner">${ico('clock', 15)}<b>Límite de Claude agotado</b><span class="muted">Continuará solo a las ${new Date(d.resumeAt * 1000).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span></div>`); }
+      s.segs.filter(g => g.kind === 'tools').forEach(g => drawAct(s, g));
+    } else if (ev === 'stopped') setVerb('Deteniendo', 'status');
+    else if (ev === 'paused') { live.insertAdjacentHTML('beforeend', `<div class="limit-note">${ico('clock', 13)}<span>Límite de Claude agotado · seguirá solo a las ${new Date(d.resumeAt * 1000).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span></div>`); }
     else if (ev === 'plan') {
       S.lastPlan = { steps: d.steps, ctx: {} };
-      if (d.reply) { $('#liveStatus', live)?.remove(); live.insertAdjacentHTML('beforeend', `<div class="step single"><div class="step-head">${agentBadge('orquestador')}</div><div class="md">${md(d.reply)}</div></div>`); return; }
+      if (d.reply) { $('#liveStatus', live)?.remove(); live.insertAdjacentHTML('beforeend', `<div class="step single"><div class="md">${md(d.reply)}</div></div>`); return; }
       single = d.steps.length === 1;
-      if (!single) live.insertAdjacentHTML('afterbegin', `<div class="plan-line">Plan: ${d.steps.map(s => `${agentIcon(agentById(s.agent), 14)} ${esc(s.agentName || s.agent)}`).join(' <span class="arrow">→</span> ')}</div>`);
-      status(single ? 'Trabajando…' : `Ejecutando ${d.steps.length} pasos…`);
+      if (!single) live.insertAdjacentHTML('afterbegin', `<div class="todo-box plan-box"><div class="todo-head">Plan</div>${d.steps.map(s => `<div class="todo pending" data-ps="${esc(s.id)}"><span class="todo-c"></span><span>${agentIcon(agentById(s.agent), 13)} <b>${esc(s.agentName || s.agent)}</b> <span class="muted">· ${esc((s.task || '').slice(0, 140))}</span></span></div>`).join('')}</div>`);
+      setVerb(single ? 'Empezando' : `Repartiendo ${d.steps.length} tareas`, 'status');
     } else if (ev === 'step_start') {
-      S.lastPlan && (S.lastPlan.ctx[d.stepId] = d); S.planStatus[d.stepId] = 'run';
+      S.lastPlan && (S.lastPlan.ctx[d.stepId] = d); S.planStatus[d.stepId] = 'run'; setPs(d.stepId, 'in_progress');
       const html = renderStep({ id: d.stepId, agentId: d.agent, model: d.model, task: d.task, text: '' }, single, true);
       $('#liveStatus', live)?.insertAdjacentHTML('beforebegin', html);
       const el = $(`[data-step="${CSS.escape(d.stepId)}"]`, live);
-      $('.meta', el).insertAdjacentHTML('afterbegin', `<span class="dot run"></span>${d.effort ? `<span class="chip effchip" title="Esfuerzo de este paso">${esc({ low: 'bajo', medium: 'medio', high: 'alto', xhigh: 'muy alto', max: 'máximo' }[d.effort] || d.effort)}</span>` : ''}<span title="Contexto estimado enviado">~${fmtTok(d.context?.estTokens || 0)} ctx</span>`);
-      steps[d.stepId] = { el, text: '', dirty: false };
-      if (document.body.classList.contains('panel-open') && S.panelTab === 'board') renderPanel();
-    } else if (ev === 'delta') { const s = steps[d.stepId]; if (s) { s.text += d.text; s.dirty = true; } }
-    else if (ev === 'tool') { const s = steps[d.stepId]; if (s) { const inp = Object.entries(d.input || {}).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' '); $('.tools', s.el).insertAdjacentHTML('beforeend', `<div class="tool-row">${ico('wrench', 13)} <b>${esc(d.name)}</b> ${esc(inp.slice(0, 200))}</div>`); } }
-    else if (ev === 'artifact') {
+      $('.meta', el).insertAdjacentHTML('afterbegin', `<span class="dot run"></span>${d.effort ? `<span class="chip effchip" title="Esfuerzo de este paso">${esc(EFFORT_NAMES[d.effort] || d.effort)}</span>` : ''}<span title="Contexto estimado enviado">~${fmtTok(d.context?.estTokens || 0)} ctx</span>`);
+      steps[d.stepId] = { el, segs: [], changes: [], name: agentById(d.agent)?.name || d.agent, done: false };
+      setVerb(who(steps[d.stepId]) + 'Pensando', 'status');
+      if (document.body.classList.contains('panel-open') && (S.panelTab === 'board' || S.panelTab === 'plan')) renderPanel();
+    } else if (ev === 'delta') {
+      const s = steps[d.stepId]; if (!s) return;
+      const g = seg(s, 'text'); g.text += d.text; g.dirty = true; outChars += d.text.length;
+      setVerb(who(s) + 'Escribiendo', 'text');
+    } else if (ev === 'tool') {
+      const s = steps[d.stepId]; if (!s) return;
+      const it = toolInfo(d.name, d.input);
+      if (it.k === 'todo') {
+        const todos = parseMaybe(d.input)?.todos;
+        if (Array.isArray(todos)) {
+          if (!s.todoEl) { s.todoEl = document.createElement('div'); $('.flow', s.el).appendChild(s.todoEl); s.segs.forEach(g => g.el.classList.remove('on')); s.segs.push({ kind: 'todo', el: s.todoEl }); }
+          s.todoEl.innerHTML = todoHtml(todos);
+          const cur = todos.find(t => t.status === 'in_progress');
+          setVerb(who(s) + (cur ? (cur.activeForm || cur.content) : 'Organizando tareas'), 'tool');
+          return;
+        }
+      }
+      const g = seg(s, 'tools'); g.items.push(it); g.t0 = Date.now(); drawAct(s, g);
+      const fileVerb = ['read', 'edit', 'write'].includes(it.k) && it.arg ? ' ' + fileName(it.arg) : '';
+      const extra = it.k === 'other' ? ' ' + it.label : it.k === 'cmd' && it.arg ? ': ' + it.arg.slice(0, 60) : fileVerb;
+      setVerb(who(s) + ACT_VERB[it.k] + extra, 'tool');
+    } else if (ev === 'artifact') {
       const s = steps[d.stepId]; if (!s) return;
       let box = $('.art-chips', s.el); if (!box) { $('.step-body', s.el).insertAdjacentHTML('beforeend', '<div class="art-chips"></div>'); box = $('.art-chips', s.el); }
       $(`[data-art="${CSS.escape(d.id)}"]`, box)?.remove();
       box.insertAdjacentHTML('beforeend', artChip(d.id, d.title, d.version, d.applied));
     } else if (ev === 'step_done') {
       const s = steps[d.stepId]; if (!s) return;
+      s.done = true; s.segs.forEach(g => g.el.classList.remove('on')); setPs(d.stepId, 'completed');
       const meta = $('.meta', s.el); $('.dot', meta)?.remove(); S.planStatus[d.stepId] = 'done';
       const mc = $('.model', s.el); if (mc && d.model) mc.textContent = d.model;
       if (d.fallbacks?.length) $('.tools', s.el).insertAdjacentHTML('afterbegin', `<div class="tool-row" title="${esc(d.fallbacks.join('\n'))}">${ico('refresh', 13)} <b>respaldo</b> ${d.fallbacks.length} modelo(s) fallaron; se usó ${esc(d.model)}</div>`);
       meta.insertAdjacentHTML('afterbegin', usageMeta(d.usage));
-    } else if (ev === 'step_error') { const s = steps[d.stepId]; if (s) { s.text += `\n\n> Error: ${d.error}`; s.dirty = true; } }
+      if (!single) setVerb('Siguiente paso', 'status');
+    } else if (ev === 'step_error') { const s = steps[d.stepId]; if (s) { const g = seg(s, 'text'); g.text += `\n\n> Error: ${d.error}`; g.dirty = true; } }
     else if (ev === 'approval') {
       const s = steps[d.stepId]; const host = s ? $('.step-body', s.el) : live;
       const what = { edit: 'quiere escribir un archivo', exec: 'quiere ejecutar un comando', mcp: 'quiere hacer un cambio' }[d.kind] || 'pide permiso';
       host.insertAdjacentHTML('beforeend', `<div class="approval" data-ap="${esc(d.id)}"><div class="row">${ico(d.kind === 'exec' ? 'code' : d.kind === 'mcp' ? 'plug' : 'pencil', 16)}<b>${esc(d.tool)}</b><span class="muted">${what}</span></div><pre>${esc(d.detail)}</pre><div class="row"><button class="btn primary sm" data-allow="1">Permitir</button><button class="btn sm" data-allow="0">Denegar</button></div></div>`);
+      setVerb('Esperando tu permiso', 'approval');
       stick();
     } else if (ev === 'approval_done') {
       const el = document.querySelector(`[data-ap="${CSS.escape(d.id)}"]`);
       if (el) el.outerHTML = `<div class="tool-row">${ico(d.allowed ? 'tick' : 'x', 13)} <b>${d.allowed ? 'Permitido' : 'Denegado'}</b></div>`;
+      setVerb('Continuando', 'status');
     }
     else if (ev === 'error') { $('#liveStatus', live)?.remove(); live.insertAdjacentHTML('beforeend', `<div class="err">${ico('alert', 14)} ${esc(d.error)}</div>`); }
     else if (ev === 'done') $('#liveStatus', live)?.remove();
   }
 }
 
+// ---------- Actividad estilo Claude Code ----------
+function parseMaybe(x) {
+  if (x && typeof x === 'object') return x;
+  try { return JSON.parse(x); } catch {}
+  const o = {}; const re = /"(file_path|path|ruta|command|pattern|query|url|description)"\s*:\s*"((?:[^"\\]|\\.)*)/g; let m;
+  while ((m = re.exec(String(x || '')))) o[m[1]] = m[2].replace(/\\\\/g, '\\');
+  return o;
+}
+function toolInfo(name, inp) {
+  const n = String(name || '').toLowerCase(); inp = parseMaybe(inp) || {};
+  const path = inp.file_path || inp.path || inp.ruta || inp.notebook_path || (Array.isArray(inp) ? inp.map(c => c.path).filter(Boolean).join(', ') : '') || '';
+  if (/^(read|read_file|leer_google_doc|obsidian_leer|notebookread)$/.test(n)) return { k: 'read', label: 'Leer', arg: path || inp.url || '' };
+  if (/^(grep|glob|ls|search_files|search_project|list_files|obsidian_buscar|obsidian_listar)$/.test(n)) return { k: 'search', label: 'Buscar', arg: inp.pattern || inp.query || inp.consulta || path };
+  if (/^(bash|shell|run_command|powershell|command_execution)$/.test(n)) return { k: 'cmd', label: 'Ejecutar', arg: inp.command || inp.comando || '' };
+  if (/^(write|write_file|obsidian_escribir|create_file)$/.test(n)) return { k: 'write', label: 'Crear', arg: path };
+  if (/^(edit|multiedit|file_change|str_replace|notebookedit|edit_file)$/.test(n)) return { k: 'edit', label: 'Editar', arg: path };
+  if (/(web_search|websearch|webfetch|^fuente$)/.test(n)) return { k: 'web', label: 'Web', arg: inp.query || inp.url || '' };
+  if (/todo/.test(n)) return { k: 'todo', label: 'Tareas', arg: '' };
+  if (/elevenlabs/.test(n)) return { k: 'audio', label: 'Audio', arg: inp.texto || inp.text || inp.prompt || inp.descripcion || '' };
+  if (/gemini/.test(n)) return { k: 'media', label: 'Gemini', arg: inp.ruta || '' };
+  if (/^(task|agent)$/.test(n)) return { k: 'agent', label: 'Subagente', arg: inp.description || '' };
+  const label = String(name || '').replace(/^mcp__/, '').replace(/__/g, ' › ');
+  return { k: 'other', label, arg: JSON.stringify(inp).slice(0, 140) };
+}
+const ACT_VERB = { read: 'Leyendo', search: 'Buscando en el código', cmd: 'Ejecutando', edit: 'Editando', write: 'Creando', web: 'Buscando en la web', audio: 'Generando audio', media: 'Analizando con Gemini', todo: 'Organizando tareas', agent: 'Lanzando un subagente', other: 'Usando' };
+function relPath(p) {
+  let s = String(p || '').replace(/\\/g, '/');
+  const pr = project()?.path;
+  if (pr) { const b = pr.replace(/\\/g, '/').replace(/\/$/, '') + '/'; if (s.toLowerCase().startsWith(b.toLowerCase())) s = s.slice(b.length); }
+  return s;
+}
+const sameFile = (a, b) => { a = relPath(a).toLowerCase(); b = relPath(b).toLowerCase(); return a === b || a.endsWith('/' + b) || b.endsWith('/' + a); };
+function actSummary(items, changes = []) {
+  const g = {}; items.forEach(i => (g[i.k] = g[i.k] || []).push(i));
+  const n = k => g[k]?.length || 0, pl = (c, s, p) => c + ' ' + (c === 1 ? s : p);
+  const parts = [];
+  const files = (k, verb) => {
+    if (!g[k]) return;
+    const fs = [...new Set(g[k].map(i => i.arg).filter(Boolean))];
+    if (!fs.length) { parts.push(verb + ' ' + pl(n(k), 'archivo', 'archivos')); return; }
+    const ch = changes.filter(c => fs.some(f => sameFile(c.path, f)));
+    const a = ch.reduce((x, c) => x + (c.added || 0), 0), r = ch.reduce((x, c) => x + (c.removed || 0), 0);
+    parts.push(`${verb} ${fs.length === 1 ? `<span class="fname">${esc(fileName(fs[0]))}</span>` : fs.length + ' archivos'}${a ? ` <span class="add">+${a}</span>` : ''}${r ? ` <span class="rem">−${r}</span>` : ''}`);
+  };
+  if (n('read')) parts.push('leyó ' + pl(n('read'), 'archivo', 'archivos'));
+  if (n('search')) parts.push('buscó ' + pl(n('search'), 'vez', 'veces'));
+  if (n('cmd')) parts.push('ejecutó ' + pl(n('cmd'), 'comando', 'comandos'));
+  files('write', 'creó'); files('edit', 'editó');
+  if (n('web')) parts.push('consultó la web ' + pl(n('web'), 'vez', 'veces'));
+  if (n('media')) parts.push('analizó ' + pl(n('media'), 'archivo', 'archivos') + ' con Gemini');
+  if (n('audio')) parts.push('generó ' + pl(n('audio'), 'audio', 'audios'));
+  if (n('todo')) parts.push('actualizó su lista de tareas');
+  if (n('agent')) parts.push('lanzó ' + pl(n('agent'), 'subagente', 'subagentes'));
+  if (n('other')) parts.push('usó ' + [...new Set(g.other.map(i => i.label))].slice(0, 3).map(esc).join(', '));
+  const s = parts.join(', ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function actItem(i) {
+  const file = ['edit', 'write', 'read'].includes(i.k) && i.arg;
+  return `<div class="act-item ${file ? 'click' : ''}" ${file ? `data-file="${esc(i.arg)}" data-fk="${i.k}"` : ''}><span class="k">${esc(i.k === 'other' ? 'Herramienta' : i.label)}</span><span class="a" title="${esc(i.arg)}">${esc(file ? relPath(i.arg) : i.k === 'other' ? i.label : i.arg)}</span></div>`;
+}
+function actHtml(items, changes) {
+  return `<div class="act"><button class="act-sum">${actSummary(items, changes)} <span class="chev">${ico('chevron', 13)}</span></button><div class="act-list">${items.map(actItem).join('')}</div></div>`;
+}
+function stepFlow(s) {
+  let tl = s.timeline?.length && !s.error ? s.timeline : null;
+  if (!tl) tl = [...(s.tools || []).map(t => ({ t: 'tool', name: t.name, input: t.input })), { t: 'text', text: s.text }];
+  const out = []; let grp = null;
+  const lastTodo = tl.map((e, i) => e.t === 'tool' && toolInfo(e.name, e.input).k === 'todo' ? i : -1).filter(i => i >= 0).pop();
+  for (const [ix, e] of tl.entries()) {
+    if (e.t === 'tool' && toolInfo(e.name, e.input).k === 'todo') { const todos = parseMaybe(e.input)?.todos; if (Array.isArray(todos)) { grp = null; if (ix === lastTodo) out.push({ t: 'todo', todos }); continue; } }
+    if (e.t === 'tool') { const it = toolInfo(e.name, e.input); if (grp) grp.push(it); else { grp = [it]; out.push({ t: 'tools', items: grp }); } }
+    else { grp = null; if ((e.text || '').trim()) out.push(e); }
+  }
+  return out.map(e => e.t === 'todo' ? todoHtml(e.todos) : e.t === 'tools' ? actHtml(e.items, s.changes || []) : `<div class="md seg ${s.error ? 'err' : ''}">${md(e.text)}</div>`).join('');
+}
+function todoHtml(todos) {
+  if (!Array.isArray(todos) || !todos.length) return '';
+  const done = todos.filter(t => t.status === 'completed').length;
+  return `<div class="todo-box"><div class="todo-head">Tareas <span class="muted">${done}/${todos.length}</span></div>${todos.map(t => `<div class="todo ${esc(t.status || 'pending')}">${t.status === 'completed' ? ico('check', 14) : '<span class="todo-c"></span>'}<span>${esc(t.status === 'in_progress' ? (t.activeForm || t.content) : t.content)}</span></div>`).join('')}</div>`;
+}
+function aggChanges(steps) {
+  const m = new Map();
+  for (const s of steps || []) for (const c of s.changes || []) {
+    const k = relPath(c.path); const o = m.get(k) || { path: k, added: 0, removed: 0, applied: true };
+    o.added += c.added || 0; o.removed += c.removed || 0; o.applied = o.applied && c.applied !== false; m.set(k, o);
+  }
+  return [...m.values()];
+}
+function changeRow(c) {
+  const dir = c.path.split('/').slice(0, -1).join('/');
+  return `<div class="cc-row" data-file="${esc(c.path)}" data-fk="edit" title="${esc(c.path)}">${ico('code', 14)}<span class="cc-name">${esc(fileName(c.path))}</span><span class="cc-dir">${esc(dir)}</span>${c.applied ? '' : '<span class="chip" style="font-size:10.5px">propuesta</span>'}<span style="flex:1"></span>${c.added ? `<span class="add">+${c.added}</span>` : ''}${c.removed ? `<span class="rem">−${c.removed}</span>` : ''}</div>`;
+}
+function changesCard(steps) {
+  const list = aggChanges(steps); if (!list.length) return '';
+  const A = list.reduce((x, c) => x + c.added, 0), R = list.reduce((x, c) => x + c.removed, 0);
+  return `<div class="changes-card"><div class="cc-head">${list.length === 1 ? 'Se modificó 1 archivo' : `Se modificaron ${list.length} archivos`}</div>${list.slice(0, 3).map(changeRow).join('')}${list.length > 3 ? `<div class="cc-more">${list.slice(3).map(changeRow).join('')}</div>` : ''}<button class="cc-all"><span>${list.length > 3 ? 'Ver todo' : 'Ver diferencias'}</span><span style="flex:1"></span><span class="add">+${A}</span> <span class="rem">−${R}</span></button></div>`;
+}
+function openFileRef(path, kind) {
+  if (kind === 'read') { S.fileView = relPath(path); openPanelTab('files'); return; }
+  S.diffPath = relPath(path); openPanelTab('changes');
+}
+
+// ---------- Paneles como Claude Code: terminal, cambios, navegador, archivos ----------
+function togglePanelTab(t) {
+  if (document.body.classList.contains('panel-open') && S.panelTab === t) { document.body.classList.remove('panel-open'); markPanelBtns(); return; }
+  openPanelTab(t);
+}
+function markPanelBtns() { const open = document.body.classList.contains('panel-open'); $$('[data-ptab]').forEach(b => b.classList.toggle('on', open && b.dataset.ptab === S.panelTab)); }
+const shortCwd = p => { const a = String(p || '').replace(/\\/g, '/').split('/').filter(Boolean); return a.length > 2 ? '…/' + a.slice(-2).join('/') : a.join('/') || '~'; };
+
+function renderTermTab(body) {
+  const T = S.term || (S.term = { lines: [], cwd: null, hist: [], hi: 0, busy: false, pid: null });
+  if (T.pid !== S.projectId) { T.pid = S.projectId; T.cwd = null; }
+  body.innerHTML = `<div class="term"><div class="term-out" id="termOut"></div><div class="term-in"><span class="term-cwd" id="termCwd"></span><span class="term-p">&gt;</span><input id="termIn" spellcheck="false" autocomplete="off" placeholder="git status, gradlew build, dir…"></div></div>`;
+  const draw = () => {
+    const out = $('#termOut'); if (!out) return;
+    out.innerHTML = T.lines.map(l => `<div class="tl-cmd"><span class="muted">${esc(shortCwd(l.cwd))}&gt;</span> ${esc(l.cmd)}</div>${l.out ? `<pre class="tl-out ${l.code ? 'bad' : ''}">${esc(l.out)}</pre>` : ''}${l.run ? '<div class="muted tl-run">Ejecutando…</div>' : ''}`).join('')
+      || '<div class="muted" style="font-size:12.5px;line-height:1.5">Terminal en la carpeta del proyecto (cmd de Windows).<br>Usa <b>cd</b> para moverte, <b>cls</b> para limpiar y las flechas para repetir comandos.</div>';
+    out.scrollTop = out.scrollHeight;
+    $('#termCwd').textContent = shortCwd(T.cwd || project()?.path || '~');
+  };
+  draw();
+  const inp = $('#termIn'); inp.focus();
+  inp.onkeydown = async e => {
+    if (e.key === 'ArrowUp') { T.hi = Math.max(0, T.hi - 1); inp.value = T.hist[T.hi] || ''; e.preventDefault(); return; }
+    if (e.key === 'ArrowDown') { T.hi = Math.min(T.hist.length, T.hi + 1); inp.value = T.hist[T.hi] || ''; e.preventDefault(); return; }
+    if (e.key !== 'Enter') return;
+    const cmd = inp.value.trim(); if (!cmd || T.busy) return; inp.value = '';
+    T.hist.push(cmd); T.hi = T.hist.length;
+    if (cmd === 'cls' || cmd === 'clear') { T.lines = []; draw(); return; }
+    const line = { cmd, cwd: T.cwd || project()?.path || '', out: '', run: true }; T.lines.push(line); T.busy = true; draw();
+    try {
+      const r = await fetch('/api/terminal', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Faisp': '1' }, body: JSON.stringify({ projectId: S.projectId, command: cmd, cwd: T.cwd }) });
+      const j = await r.json(); line.out = j.out; line.code = j.code; if (j.cwd) T.cwd = j.cwd;
+    } catch (err) { line.out = err.message; line.code = 1; }
+    line.run = false; T.busy = false; T.lines = T.lines.slice(-80); draw();
+  };
+}
+
+async function renderChangesTab(body) {
+  const p = project();
+  if (!p?.path) { body.innerHTML = '<h3>Cambios</h3><div class="muted" style="font-size:13px">Este proyecto no tiene carpeta.</div>'; return; }
+  body.innerHTML = '<div class="muted" style="font-size:13px">Cargando cambios…</div>';
+  const g = await api('GET', `/api/projects/${p.id}/git`).catch(() => ({ repo: false, files: [] }));
+  if (S.panelTab !== 'changes') return;
+  const files = g.repo ? g.files : aggChanges((S.chat?.messages || []).flatMap(m => m.steps || [])).map(c => ({ ...c, status: c.applied ? 'M' : 'P' }));
+  const A = files.reduce((x, c) => x + (c.added || 0), 0), R = files.reduce((x, c) => x + (c.removed || 0), 0);
+  const stName = s => ({ '??': ['U', 'nuevo'], A: ['A', 'añadido'], M: ['M', 'modificado'], D: ['D', 'borrado'], R: ['R', 'renombrado'], P: ['P', 'propuesto'] })[s] || [s || 'M', s];
+  body.innerHTML = `<div class="ch-top">${g.repo ? `<span class="chip">${ico('branch', 12)} ${esc(g.branch || '')}</span>` : '<span class="muted" style="font-size:12.5px">Sin git: cambios de este chat</span>'}<span class="muted" style="font-size:12.5px">${files.length} archivo${files.length === 1 ? '' : 's'}</span><span class="add">+${A}</span><span class="rem">−${R}</span><span style="flex:1"></span><button class="icon-btn" id="chRef" title="Actualizar">${ico('refresh', 14)}</button></div>
+    <div class="ch-files">${files.map(f => { const [l, t] = stName(f.status); const dir = f.path.split('/').slice(0, -1).join('/'); return `<div class="ch-file ${S.diffPath && sameFile(S.diffPath, f.path) ? 'on' : ''}" data-dp="${esc(f.path)}" title="${esc(f.path)}"><span class="st st-${esc(l)}" title="${esc(t)}">${esc(l)}</span><span class="cc-name">${esc(fileName(f.path))}</span><span class="cc-dir">${esc(dir)}</span><span style="flex:1"></span>${f.added ? `<span class="add">+${f.added}</span>` : ''}${f.removed ? `<span class="rem">−${f.removed}</span>` : ''}</div>`; }).join('') || '<div class="muted" style="font-size:13px;padding:8px 0">No hay cambios sin guardar.</div>'}</div>
+    <div id="diffBox"></div>`;
+  $('#chRef').onclick = () => renderChangesTab(body);
+  const show = async path => {
+    S.diffPath = path; $$('.ch-file', body).forEach(x => x.classList.toggle('on', x.dataset.dp === path));
+    const box = $('#diffBox'); box.innerHTML = '<div class="muted" style="font-size:13px">Cargando diferencias…</div>';
+    const r = await api('GET', `/api/projects/${p.id}/git/diff?path=${encodeURIComponent(path)}`).catch(e => ({ diff: '', err: e.message }));
+    const cls = l => l.startsWith('+++') || l.startsWith('---') || l.startsWith('diff ') || l.startsWith('index ') ? 'dl-meta' : l.startsWith('+') ? 'dl-add' : l.startsWith('-') ? 'dl-rem' : l.startsWith('@@') ? 'dl-hunk' : '';
+    box.innerHTML = `<div class="diff-head">${ico('code', 13)} <span class="mono">${esc(path)}</span><span style="flex:1"></span><button class="btn sm" id="dfOpen">Ver archivo</button></div>${r.diff ? `<pre class="diff-pre">${r.diff.split('\n').map(l => `<span class="${cls(l)}">${esc(l) || ' '}</span>`).join('\n')}</pre>` : `<div class="muted" style="font-size:13px">${esc(r.err || 'Sin diferencias que mostrar (¿ya está guardado en git o fuera del proyecto?).')}</div>`}`;
+    $('#dfOpen').onclick = () => { S.fileView = path; openPanelTab('files'); };
+  };
+  $$('.ch-file', body).forEach(x => x.onclick = () => show(x.dataset.dp));
+  if (S.diffPath) { const f = files.find(f => sameFile(S.diffPath, f.path)); show(f ? f.path : S.diffPath); }
+}
+
+function renderBrowserTab(body) {
+  const url = S.browserUrl || '';
+  body.innerHTML = `<div class="br"><div class="br-bar"><button class="icon-btn" id="brReload" title="Recargar">${ico('refresh', 14)}</button><input class="in" id="brUrl" value="${esc(url)}" placeholder="localhost:3000 o una dirección web" spellcheck="false"><button class="icon-btn" id="brExt" title="Abrir en el navegador del sistema">${ico('external', 14)}</button></div>
+    ${url ? `<iframe id="brFrame" src="${esc(url)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe><div class="muted br-note">¿Sale en blanco? Algunos sitios no permiten verse dentro de otra app: ábrelo fuera con el botón de arriba.</div>`
+      : `<div class="br-empty"><div class="muted" style="font-size:13px;margin-bottom:10px">Vista previa de tu web o servidor local mientras trabajas.</div>${['localhost:3000', 'localhost:5173', 'localhost:8080', 'localhost:4321'].map(u => `<button class="chip" data-bru="${u}">${u}</button>`).join(' ')}</div>`}</div>`;
+  const go = v => { v = v.trim(); if (!v) return; if (!/^https?:\/\//i.test(v)) v = (/^(localhost|127\.|\[::1\]|\d+\.\d+\.\d+\.\d+)/i.test(v) ? 'http://' : 'https://') + v; S.browserUrl = v; renderBrowserTab(body); };
+  $('#brUrl').onkeydown = e => { if (e.key === 'Enter') go(e.target.value); };
+  $('#brReload').onclick = () => { const f = $('#brFrame'); if (f) f.src = f.src; };
+  $('#brExt').onclick = () => { if (S.browserUrl) window.open(S.browserUrl, '_blank'); };
+  $$('[data-bru]', body).forEach(b => b.onclick = () => go(b.dataset.bru));
+}
+
+async function projectFiles(p) {
+  S.treeCache = S.treeCache || {};
+  const c = S.treeCache[p.id]; if (c && Date.now() - c.t < 60000) return c.files;
+  const r = await api('GET', `/api/projects/${p.id}/tree`).catch(() => ({ files: [] }));
+  const files = (r.files || []).map(f => String(f).replace(/\\/g, '/'));
+  S.treeCache[p.id] = { t: Date.now(), files };
+  return files;
+}
+function mentionFile(rel) {
+  const ta = $('#prompt');
+  if (ta) { const p = ta.selectionStart ?? ta.value.length; const ins = (p && !/\s$/.test(ta.value.slice(0, p)) ? ' ' : '') + '@' + rel + ' '; ta.value = ta.value.slice(0, p) + ins + ta.value.slice(p); ta.focus(); ta.selectionStart = ta.selectionEnd = p + ins.length; autosize(ta); updateSendBtn(); }
+  if (!S.attachments.includes(rel)) { S.attachments = [...S.attachments, rel]; renderAttachments(); }
+}
+async function renderFilesTab(body) {
+  const p = project();
+  if (!p?.path) { body.innerHTML = '<h3>Archivos</h3><div class="muted" style="font-size:13px">Este proyecto no tiene carpeta.</div>'; return; }
+  if (S.fileView) return renderFileView(body, p, S.fileView);
+  S.openDirs = S.openDirs || new Set();
+  body.innerHTML = `<div class="files"><input class="in" id="fFilter" placeholder="Filtrar archivos…" value="${esc(S.fileFilter || '')}" spellcheck="false"><div class="ftree" id="fTree"><div class="muted" style="font-size:13px">Cargando…</div></div></div>`;
+  const files = await projectFiles(p);
+  if (S.panelTab !== 'files') return;
+  const tree = {};
+  for (const f of files) { let n = tree; const parts = f.split('/'); parts.forEach((x, i) => { if (i === parts.length - 1) (n.__f = n.__f || []).push(f); else n = n[x] = n[x] || {}; }); }
+  const node = (n, base, depth) => Object.keys(n).filter(k => k !== '__f').sort((a, b) => a.localeCompare(b)).map(d => { const path = base + d + '/'; const open = S.openDirs.has(path); return `<div class="fdir ${open ? 'open' : ''}" data-dir="${esc(path)}" style="padding-left:${depth * 14 + 4}px">${ico('chevron', 12)}${ico('folder', 14)} ${esc(d)}</div>${open ? node(n[d], path, depth + 1) : ''}`; }).join('')
+    + (n.__f || []).sort((a, b) => a.localeCompare(b)).map(f => `<div class="ffile" data-fv="${esc(f)}" style="padding-left:${depth * 14 + 20}px">${ico('file', 13)} ${esc(fileName(f))}</div>`).join('');
+  const draw = () => {
+    const q = (S.fileFilter || '').toLowerCase().trim();
+    const el = $('#fTree'); if (!el) return;
+    el.innerHTML = q ? files.filter(f => f.toLowerCase().includes(q)).slice(0, 300).map(f => `<div class="ffile" data-fv="${esc(f)}">${ico('file', 13)} ${esc(fileName(f))} <span class="cc-dir">${esc(f.split('/').slice(0, -1).join('/'))}</span></div>`).join('') || '<div class="muted" style="font-size:13px">Sin coincidencias</div>'
+      : node(tree, '', 0) || '<div class="muted" style="font-size:13px">Carpeta vacía</div>';
+    $$('.fdir', el).forEach(d => d.onclick = () => { const k = d.dataset.dir; S.openDirs.has(k) ? S.openDirs.delete(k) : S.openDirs.add(k); draw(); });
+    $$('.ffile', el).forEach(f => f.onclick = () => { S.fileView = f.dataset.fv; renderFilesTab(body); });
+  };
+  draw();
+  const fi = $('#fFilter'); fi.oninput = () => { S.fileFilter = fi.value; draw(); };
+}
+async function renderFileView(body, p, rel) {
+  body.innerHTML = `<div class="fv-head"><button class="icon-btn" id="fvBack" title="Volver">${ico('arrowLeft', 15)}</button><span class="mono fv-path" title="${esc(rel)}">${esc(rel)}</span><button class="btn sm" id="fvMention" title="Añadirlo a tu mensaje">@ Mencionar</button></div><div id="fvBody" class="muted" style="font-size:13px">Cargando…</div>`;
+  $('#fvBack').onclick = () => { S.fileView = null; renderFilesTab(body); };
+  $('#fvMention').onclick = () => mentionFile(rel);
+  const box = $('#fvBody');
+  if (IMG_RE.test(rel)) { const abs = p.path.replace(/[\\/]$/, '') + '\\' + rel.replace(/\//g, '\\'); box.innerHTML = `<img class="fv-img" src="/api/file?path=${encodeURIComponent(abs)}" alt="" data-zoom="${esc(abs)}">`; return; }
+  try {
+    const r = await api('GET', `/api/projects/${p.id}/file?path=${encodeURIComponent(rel)}`);
+    if (S.fileView !== rel) return;
+    const lines = String(r.content || '').split('\n');
+    box.className = ''; box.innerHTML = `<pre class="fv-code">${lines.map((l, i) => `<span class="ln">${i + 1}</span>${esc(l) || ' '}`).join('\n')}</pre>`;
+  } catch {
+    S.fileView = null; S.fileFilter = fileName(rel); renderFilesTab(body);
+  }
+}
+
+// ---------- Menús de «/» y «@» en el cuadro de escritura ----------
+function setModeQuick(m) { S.mode = m; store.set('mode', m); $('#modePick')?.dispatchEvent(new Event('redraw')); toast('Modo: ' + (MODES.find(x => x.id === m)?.label || m)); }
+const SLASH = [
+  { c: 'compactar', d: 'Resume la conversación para ahorrar contexto', i: 'layers', run: async () => { if (!S.chat?.id) return toast('Aún no hay conversación'); toast('Compactando…'); await api('POST', `/api/chats/${S.chat.id}/compact`); updateContext(); toast('Conversación compactada'); } },
+  { c: 'nuevo', d: 'Empieza un chat nuevo', i: 'plus', run: () => $('#newChat').click() },
+  { c: 'plan', d: 'Modo plan: propone sin cambiar nada', i: 'book', run: () => setModeQuick('plan') },
+  { c: 'auto', d: 'Modo automático', i: 'zap', run: () => setModeQuick('auto') },
+  { c: 'aceptar-ediciones', d: 'Acepta las ediciones sin preguntar', i: 'pencil', run: () => setModeQuick('acceptEdits') },
+  { c: 'manual', d: 'Pregunta antes de cada cambio', i: 'shield', run: () => setModeQuick('manual') },
+  { c: 'esfuerzo', d: 'Cambia el nivel de esfuerzo', i: 'chart', run: () => $('#effPick')?.click() },
+  { c: 'agente', d: 'Elige quién responde', i: 'bot', run: () => $('#agentPick')?.click() },
+  { c: 'contexto', d: 'Cuánto contexto lleva esta conversación', i: 'layers', run: () => $('#ctxChip')?.click() },
+  { c: 'terminal', d: 'Terminal en la carpeta del proyecto', i: 'terminal', run: () => openPanelTab('terminal') },
+  { c: 'cambios', d: 'Archivos modificados y sus diferencias', i: 'diff', run: () => openPanelTab('changes') },
+  { c: 'archivos', d: 'Explorador de archivos del proyecto', i: 'folder', run: () => openPanelTab('files') },
+  { c: 'navegador', d: 'Vista previa web', i: 'globe', run: () => openPanelTab('browser') },
+  { c: 'lateral', d: 'Chat lateral (Ctrl+;)', i: 'chat', run: () => openPanelTab('side') },
+  { c: 'tareas', d: 'Trabajos en segundo plano', i: 'list', run: () => openPanelTab('tasks') },
+  { c: 'uso', d: 'Uso y límites de tus cuentas', i: 'chart', run: () => { S.view = 'settings'; S.settingsTab = 'usage'; renderSidebar(); render(); } },
+  { c: 'ajustes', d: 'Abre los ajustes', i: 'settings', run: () => { S.view = 'settings'; renderSidebar(); render(); } },
+];
+function slashItems(q) {
+  const rank = arr => arr.filter(x => x.key.includes(q)).sort((a, b) => (a.key.startsWith(q) ? 0 : 1) - (b.key.startsWith(q) ? 0 : 1));
+  const cmds = rank(SLASH.map(c => ({ key: c.c, icon: ico(c.i, 15), title: '/' + c.c, sub: c.d, insert: '', run: c.run })));
+  const skills = rank((S.skillsList || []).map(s => ({ key: s.name.toLowerCase(), icon: ico('book', 15), title: '/' + s.name, sub: s.description || 'Skill', insert: `Usa la skill «${s.name}»: ` }))).slice(0, 12);
+  cmds.forEach((x, i) => { if (!i) x.head = 'Comandos'; });
+  skills.forEach((x, i) => { if (!i) x.head = 'Skills'; });
+  return [...cmds, ...skills];
+}
+async function mentionItems(q) {
+  const out = []; const ql = q.toLowerCase();
+  agents().filter(a => a.id !== 'orquestador' && (a.name.toLowerCase().includes(ql) || a.id.includes(ql))).slice(0, 6)
+    .forEach((a, i) => out.push({ head: i ? '' : 'Agentes', icon: agentIcon(a, 15), title: a.name, sub: 'que responda ' + a.name + ' · ' + a.model.split(':').pop(), insert: '', run: () => { S.agent = a.id; $('#agentPick')?.dispatchEvent(new Event('redraw')); toast(`Responderá ${a.name}`); } }));
+  const p = project();
+  if (p?.path) {
+    const files = await projectFiles(p);
+    files.filter(f => f.toLowerCase().includes(ql))
+      .sort((a, b) => (fileName(a).toLowerCase().startsWith(ql) ? 0 : 1) - (fileName(b).toLowerCase().startsWith(ql) ? 0 : 1) || a.length - b.length).slice(0, 8)
+      .forEach((f, i) => out.push({ head: i ? '' : 'Archivos del proyecto', icon: ico('file', 14), title: fileName(f), sub: f, insert: '@' + f + ' ', run: () => { if (!S.attachments.includes(f)) { S.attachments = [...S.attachments, f]; renderAttachments(); } } }));
+  }
+  return out;
+}
+function setupPop(ta, wrap) {
+  if (!S.skillsList) { S.skillsList = []; api('GET', '/api/extensions').then(r => { S.skillsList = r.skills || []; }).catch(() => {}); }
+  const pop = document.createElement('div'); pop.className = 'pop hidden'; wrap.appendChild(pop);
+  let items = [], idx = 0, tok = null, seq = 0;
+  const close = () => { pop.classList.add('hidden'); items = []; tok = null; };
+  const draw = () => {
+    pop.innerHTML = items.map((it, i) => `${it.head ? `<div class="pop-head">${it.head}</div>` : ''}<div class="pop-it ${i === idx ? 'on' : ''}" data-pi="${i}">${it.icon || ''}<span class="pt">${esc(it.title)}</span><span class="ps">${esc(it.sub || '')}</span></div>`).join('');
+    pop.classList.remove('hidden');
+    $$('.pop-it', pop).forEach(el => { el.onmousedown = e => { e.preventDefault(); pick(+el.dataset.pi); }; });
+    pop.querySelector('.pop-it.on')?.scrollIntoView({ block: 'nearest' });
+  };
+  const pick = i => {
+    const it = items[i]; if (!it || !tok) return;
+    const v = ta.value, rep = it.insert ?? '';
+    ta.value = v.slice(0, tok.start) + rep + v.slice(tok.end);
+    ta.selectionStart = ta.selectionEnd = tok.start + rep.length;
+    close(); ta.focus(); autosize(ta); updateSendBtn(); saveDraft();
+    it.run?.();
+  };
+  const update = async () => {
+    const my = ++seq;
+    const pos = ta.selectionStart, before = ta.value.slice(0, pos);
+    let m = before.match(/^\/([\w-]*)$/), kind = '/';
+    if (!m) { m = before.match(/(?:^|\s)@([^\s@]*)$/); kind = '@'; }
+    if (!m) return close();
+    const q = m[1].toLowerCase();
+    const list = kind === '/' ? slashItems(q) : await mentionItems(q);
+    if (my !== seq) return;
+    tok = { start: pos - m[1].length - 1, end: pos };
+    items = list; if (!items.length) return close();
+    idx = Math.min(idx, items.length - 1); draw();
+  };
+  ta.addEventListener('input', () => { idx = 0; update(); });
+  ta.addEventListener('keydown', e => {
+    if (pop.classList.contains('hidden') || !items.length) return;
+    if (e.key === 'ArrowDown') { idx = (idx + 1) % items.length; draw(); }
+    else if (e.key === 'ArrowUp') { idx = (idx - 1 + items.length) % items.length; draw(); }
+    else if (e.key === 'Enter' || e.key === 'Tab') pick(idx);
+    else if (e.key === 'Escape') close();
+    else return;
+    e.preventDefault(); e.stopImmediatePropagation();
+  });
+  ta.addEventListener('blur', () => setTimeout(close, 150));
+}
+
+// ---------- Límites: solo si siguen vigentes ----------
+function normLimits(info) {
+  if (!info) return info;
+  const now = Date.now() / 1000, exp = t => t && t < now;
+  const w = {}; for (const [k, v] of Object.entries(info.unifiedWindows || {})) w[k] = exp(v.resetsAt) ? { ...v, utilization: 0, resetsAt: null } : v;
+  const out = { ...info, unifiedWindows: w };
+  if (exp(info.resetsAt)) { out.status = 'allowed'; out.utilization = 0; out.resetsAt = null; }
+  return out;
+}
+
 // Acciones delegadas: código, artefactos, pasos plegables
 document.addEventListener('click', async e => {
+  const asum = e.target.closest('.act-sum');
+  if (asum) { asum.parentElement.classList.toggle('open'); return; }
+  const fref = e.target.closest('[data-file]');
+  if (fref) { openFileRef(fref.dataset.file, fref.dataset.fk); return; }
+  const ccall = e.target.closest('.cc-all');
+  if (ccall) { const card = ccall.closest('.changes-card'); if ($('.cc-more', card) && !card.classList.contains('all')) { card.classList.add('all'); $('span', ccall).textContent = 'Ver diferencias'; } else openFileRef($('.cc-row', card)?.dataset.file || '', 'edit'); return; }
+  const fp = e.target.closest('code.fpath');
+  if (fp) { openFileRef(fp.dataset.fpath, 'read'); return; }
   const head = e.target.closest('.step:not(.single) > .step-head');
   if (head) { head.parentElement.classList.toggle('closed'); return; }
   const b = e.target.closest('[data-act]');
@@ -834,7 +1344,7 @@ async function msgAction(act, mid, btn) {
 
 // ---------- Panel derecho ----------
 $('#panelBtn').onclick = () => { document.body.classList.toggle('panel-open'); if (document.body.classList.contains('panel-open')) renderPanel(); };
-$('#closePanel').onclick = () => document.body.classList.remove('panel-open');
+$('#closePanel').onclick = () => { document.body.classList.remove('panel-open'); markPanelBtns(); };
 $$('#panelTabs button').forEach(b => b.onclick = () => { S.panelTab = b.dataset.tab; renderPanel(); });
 
 function openArtifact(id) { S.artifactId = id; S.preview = null; S.panelTab = 'artifact'; document.body.classList.add('panel-open'); renderPanel(); }
@@ -845,7 +1355,12 @@ async function renderPanel() {
   const body = $('#panelBody');
   if (S.panelTab === 'plan') return renderPlanTab(body);
   if (S.panelTab === 'tasks') return renderTasksTab(body);
+  markPanelBtns();
   if (S.panelTab === 'side') return renderSideTab(body);
+  if (S.panelTab === 'terminal') return renderTermTab(body);
+  if (S.panelTab === 'changes') return renderChangesTab(body);
+  if (S.panelTab === 'browser') return renderBrowserTab(body);
+  if (S.panelTab === 'files') return renderFilesTab(body);
   if (S.panelTab === 'board') {
     const p = project();
     if (!p) { body.innerHTML = '<div class="muted">Elige un proyecto.</div>'; return; }
@@ -1326,7 +1841,7 @@ function fmtReset(ts) {
 }
 function limitsHtml(l) {
   if (!l || !l.info) return '<p class="muted">Aún no hay datos. Pulsa «Actualizar» (hace una consulta mínima con Haiku) o usa cualquier agente con tu suscripción.</p>';
-  const info = l.info, wins = info.unifiedWindows || {};
+  const info = normLimits(l.info), wins = info.unifiedWindows || {};
   const entries = Object.keys(wins).length ? Object.entries(wins) : [[info.rateLimitType || 'five_hour', { utilization: info.utilization, resetsAt: info.resetsAt }]];
   const order = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet'];
   entries.sort((a, b) => (order.indexOf(a[0]) + 99) % 99 - (order.indexOf(b[0]) + 99) % 99);
@@ -1704,10 +2219,11 @@ addEventListener('focus', () => {
 });
 
 (async function init() {
-  $('#panelTabs').innerHTML = [['board', 'Pizarra'], ['plan', 'Plan'], ['tasks', 'Tareas'], ['side', 'Lateral'], ['artifact', 'Artefacto']].map(([t, l]) => `<button data-tab="${t}" class="${t === S.panelTab ? 'on' : ''}">${l}</button>`).join('');
+  $('#panelTabs').innerHTML = [['board', 'Pizarra'], ['plan', 'Plan'], ['tasks', 'Tareas'], ['terminal', 'Terminal'], ['changes', 'Cambios'], ['browser', 'Navegador'], ['files', 'Archivos'], ['side', 'Lateral'], ['artifact', 'Artefacto']].map(([t, l]) => `<button data-tab="${t}" class="${t === S.panelTab ? 'on' : ''}">${l}</button>`).join('');
   $$('#panelTabs button').forEach(b => b.onclick = () => { S.panelTab = b.dataset.tab; renderPanel(); });
   $$('[data-i]').forEach(e => e.insertAdjacentHTML('afterbegin', ico(e.dataset.i, +e.dataset.s || 17)));
   $('#moreBtn').onclick = e => moreMenu(e.currentTarget);
+  $$('[data-ptab]').forEach(b => b.onclick = () => togglePanelTab(b.dataset.ptab));
   $$('#sidebar .nav-item').forEach(b => { const l = $('.label', b); if (l && !b.title) b.title = l.textContent; });
   const toggleSide = window.toggleSide = () => { document.body.classList.toggle('collapsed'); store.set('collapsed', document.body.classList.contains('collapsed') ? '1' : '0'); syncOpenSide(); $('#toggleSide').title = document.body.classList.contains('collapsed') ? 'Abrir barra lateral (Ctrl+B)' : 'Contraer barra lateral (Ctrl+B)'; };
   $('#toggleSide').onclick = toggleSide;

@@ -305,6 +305,8 @@ pub struct StepResult {
     pub error: bool,
     pub effort: String,
     pub changes: Vec<FileChange>,
+    /// Texto y herramientas en el orden en que ocurrieron (para mostrarlo como Claude Code)
+    pub timeline: Vec<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]

@@ -15,6 +15,81 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub type Tx = UnboundedSender<(String, Value)>;
 
+#[derive(Default)]
+pub struct LiveRun {
+    pub run_id: String,
+    pub events: Vec<(String, Value)>,
+    pub subs: Vec<Tx>,
+}
+
+/// Lanza un trabajo en segundo plano. Sigue aunque nadie lo mire; cualquiera puede engancharse
+/// después con `subscribe` y recibe todo lo ocurrido hasta ahora y lo que venga.
+pub fn spawn_run(st: Arc<AppState>, chat_id: String, text: String, agent_id: Option<String>, attachments: Vec<String>, ctx: RunCtx) -> tokio::sync::mpsc::UnboundedReceiver<(String, Value)> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
+    let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
+    let run_id = uid("g_");
+    st.live.lock().unwrap().insert(chat_id.clone(), LiveRun { run_id: run_id.clone(), events: vec![], subs: vec![sub_tx] });
+    let st2 = st.clone();
+    let cid = chat_id.clone();
+    tokio::spawn(async move {
+        while let Some((ev, data)) = rx.recv().await {
+            let mut live = st2.live.lock().unwrap();
+            let Some(l) = live.get_mut(&cid).filter(|l| l.run_id == run_id) else { continue };
+            let mut merged = false;
+            if ev == "delta" {
+                if let Some((pev, pd)) = l.events.last_mut() {
+                    if pev == "delta" && pd["stepId"] == data["stepId"] {
+                        let t = format!("{}{}", pd["text"].as_str().unwrap_or(""), data["text"].as_str().unwrap_or(""));
+                        pd["text"] = json!(t);
+                        merged = true;
+                    }
+                }
+            }
+            if !merged {
+                l.events.push((ev.clone(), data.clone()));
+            }
+            l.subs.retain(|s| s.send((ev.clone(), data.clone())).is_ok());
+            // «done» cierra el directo aunque quede algún emisor colgado (p. ej. un paso detenido)
+            if ev == "done" {
+                break;
+            }
+        }
+        let mut live = st2.live.lock().unwrap();
+        if live.get(&cid).map(|l| l.run_id == run_id).unwrap_or(false) {
+            live.remove(&cid);
+        }
+    });
+    tokio::spawn(async move {
+        let tx2 = tx.clone();
+        if let Err(e) = run_request(st, chat_id, text, agent_id, attachments, tx, ctx).await {
+            let _ = tx2.send(("error".into(), json!({"error": e.to_string()})));
+        }
+    });
+    sub_rx
+}
+
+/// Engancharse a un trabajo en curso: repite lo ocurrido y sigue en directo.
+pub fn subscribe(st: &AppState, chat_id: &str) -> Option<tokio::sync::mpsc::UnboundedReceiver<(String, Value)>> {
+    let mut live = st.live.lock().unwrap();
+    let l = live.get_mut(chat_id)?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for e in &l.events {
+        let _ = tx.send(e.clone());
+    }
+    l.subs.push(tx);
+    Some(rx)
+}
+
+/// Acorta las entradas de herramientas para mostrarlas (sin volcar archivos enteros).
+pub fn shorten_input(v: &Value) -> Value {
+    match v {
+        Value::String(s) if s.chars().count() > 240 => json!(format!("{}… ({} caracteres)", s.chars().take(200).collect::<String>(), s.chars().count())),
+        Value::Object(m) => Value::Object(m.iter().map(|(k, x)| (k.clone(), if k == "content" && x.as_str().map(|s| s.len() > 240).unwrap_or(false) { json!(format!("({} caracteres)", x.as_str().map(|s| s.len()).unwrap_or(0))) } else { shorten_input(x) })).collect()),
+        Value::Array(a) => Value::Array(a.iter().take(20).map(shorten_input).collect()),
+        _ => v.clone(),
+    }
+}
+
 pub struct AppState {
     pub cfg: RwLock<Config>,
     pub db: Mutex<Db>,
@@ -41,6 +116,9 @@ pub struct AppState {
     pub running: Mutex<HashMap<String, (String, String, Option<String>)>>,
     /// Cambios de archivos por paso: "chat:paso" → cambios
     pub changes: Mutex<HashMap<String, Vec<FileChange>>>,
+    pub timeline: Mutex<HashMap<String, Vec<Value>>>,
+    /// Trabajos en curso: eventos acumulados y quién los está mirando (para volver al chat en vivo)
+    pub live: Mutex<HashMap<String, LiveRun>>,
     pub keep_awake: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
@@ -78,6 +156,8 @@ impl AppState {
             cancels: Default::default(),
             running: Default::default(),
             changes: Default::default(),
+            timeline: Default::default(),
+            live: Default::default(),
             keep_awake: Default::default(),
         });
         st.flush();
@@ -414,13 +494,20 @@ impl Sink for StepSink {
     }
     fn text(&self, t: &str) {
         let _ = self.tx.send(("delta".into(), json!({"stepId": self.step, "text": t})));
+        let mut m = self.st.timeline.lock().unwrap();
+        let tl = m.entry(format!("{}:{}", self.chat, self.step)).or_default();
+        match tl.last_mut() {
+            Some(last) if last["t"] == "text" => {
+                let s = format!("{}{}", last["text"].as_str().unwrap_or(""), t);
+                last["text"] = json!(s);
+            }
+            _ => tl.push(json!({"t": "text", "text": t})),
+        }
     }
     fn tool(&self, name: &str, input: &Value) {
-        let mut short = input.clone();
-        if let Some(c) = short.get_mut("content") {
-            *c = json!(format!("({} caracteres)", c.as_str().map(|s| s.len()).unwrap_or(0)));
-        }
+        let short = shorten_input(input);
         let _ = self.tx.send(("tool".into(), json!({"stepId": self.step, "name": name, "input": short})));
+        self.st.timeline.lock().unwrap().entry(format!("{}:{}", self.chat, self.step)).or_default().push(json!({"t": "tool", "name": name, "input": short}));
     }
 }
 
@@ -1105,10 +1192,11 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     }
     let _ = tx.send(("step_done".into(), json!({"stepId": step.id, "usage": usage, "summary": summary, "model": r.model, "fallbacks": fallback_notes})));
     let step_changes = st.changes.lock().unwrap().remove(&format!("{}:{}", chat.id, step.id)).unwrap_or_default();
+    let step_timeline = st.timeline.lock().unwrap().remove(&format!("{}:{}", chat.id, step.id)).unwrap_or_default();
     StepResult {
         id: step.id, agent_id: agent.id, agent_name: agent.name, icon: agent.icon, color: agent.color, model: r.model, task: step.task,
         text: r.text, files, skills: skills.into_iter().map(|s| s.id).collect(), tools: r.tool_log, usage: Some(usage), artifacts: art_ids, error: false,
-        effort: effort_used, changes: step_changes,
+        effort: effort_used, changes: step_changes, timeline: step_timeline,
     }
 }
 

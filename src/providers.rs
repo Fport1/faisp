@@ -141,6 +141,9 @@ impl Sink for Tracking<'_> {
         self.emitted.store(true, std::sync::atomic::Ordering::Relaxed);
         self.inner.tool(name, input);
     }
+    fn change(&self, path: &str, added: usize, removed: usize, applied: bool) {
+        self.inner.change(path, added, removed, applied);
+    }
 }
 
 /// Prueba la cadena de modelos: salta proveedores sin configurar y, si uno falla antes de
@@ -1021,6 +1024,21 @@ async fn demo(req: &LlmRequest, pid: &str, model: &str, reason: &str, sink: &dyn
         if req.tools.is_empty() { String::new() } else { format!(", con {} herramientas de proyecto", req.tools.len()) } + if req.web_search { " y búsqueda web" } else { "" },
         if ask.chars().count() > 300 { "…" } else { "" }
     );
+    // Demo lenta para probar la vista en vivo sin gastar tokens
+    if ask.contains("[demo-lento]") {
+        for (i, (tool, input)) in [("Read", json!({"file_path": "src/main.rs"})), ("Grep", json!({"pattern": "fn main"})), ("Bash", json!({"command": "cargo check"})), ("Edit", json!({"file_path": "src/demo.rs"})), ("Write", json!({"file_path": "docs/DEMO.md"}))].into_iter().enumerate() {
+            let todos: Vec<Value> = (0..5).map(|k: usize| json!({"content": format!("Tarea {} de la demo", k + 1), "activeForm": format!("Haciendo la tarea {} de la demo", k + 1), "status": if k < i { "completed" } else if k == i { "in_progress" } else { "pending" }})).collect();
+            sink.tool("TodoWrite", &json!({"todos": todos}));
+            sink.text(&format!("Paso {} de la demo: voy con `{tool}`.
+
+", i + 1));
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            sink.tool(tool, &input);
+            if tool == "Edit" { sink.change("src/demo.rs", 12, 3, true); }
+            if tool == "Write" { sink.change("docs/DEMO.md", 40, 0, true); }
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+        }
+    }
     let chars: Vec<char> = text.chars().collect();
     for chunk in chars.chunks(14) {
         sink.text(&chunk.iter().collect::<String>());

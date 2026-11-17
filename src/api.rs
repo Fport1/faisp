@@ -360,16 +360,132 @@ struct SendBody {
 }
 
 async fn send(State(st): St, Path(id): Path<String>, Json(b): Json<SendBody>) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
-    let tx2 = tx.clone();
     let agent = b.agent_id.filter(|a| !a.is_empty() && a != "auto");
-    tokio::spawn(async move {
-        if let Err(e) = orchestrator::run_request(st, id, b.text, agent, b.attachments, tx, orchestrator::RunCtx { mode: b.mode, effort: b.effort }).await {
-            let _ = tx2.send(("error".into(), json!({"error": e.to_string()})));
-        }
+    let rx = orchestrator::spawn_run(st, id, b.text, agent, b.attachments, orchestrator::RunCtx { mode: b.mode, effort: b.effort });
+    let stream = UnboundedReceiverStream::new(rx).map(|(ev, data)| Ok(SseEvent::default().event(ev).data(data.to_string())));
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Volver a un chat que está trabajando: repite lo ocurrido y sigue en directo.
+async fn chat_live(State(st): St, Path(id): Path<String>) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
+    let rx = orchestrator::subscribe(&st, &id).unwrap_or_else(|| {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let _ = tx.send(("idle".to_string(), json!({})));
+        rx
     });
     let stream = UnboundedReceiverStream::new(rx).map(|(ev, data)| Ok(SseEvent::default().event(ev).data(data.to_string())));
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ---------------- Terminal y git (paneles como Claude Code) ----------------
+
+fn hidden_cmd(prog: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(prog);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000);
+    }
+    c
+}
+
+fn git(dir: &str, args: &[&str]) -> Option<String> {
+    let o = hidden_cmd("git").args(["-c", "core.quotepath=off"]).args(args).current_dir(dir).output().ok()?;
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TermBody {
+    project_id: Option<String>,
+    command: String,
+    cwd: Option<String>,
+}
+async fn terminal_run(State(st): St, headers: axum::http::HeaderMap, Json(b): Json<TermBody>) -> ApiResult {
+    if headers.get("x-faisp").is_none() {
+        return Err((StatusCode::FORBIDDEN, "no".into()));
+    }
+    let base = b.project_id.as_deref().and_then(|id| find_project(&st, id).ok()).map(|p| p.path).filter(|p| !p.is_empty()).or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().to_string())).unwrap_or_else(|| ".".into());
+    let cwd = b.cwd.filter(|c| std::path::Path::new(c).is_dir()).unwrap_or(base);
+    let cmd = b.command.trim().to_string();
+    if let Some(rest) = cmd.strip_prefix("cd ").or_else(|| (cmd == "cd").then_some("")) {
+        let rest = rest.trim().trim_matches('"');
+        let target = if rest.is_empty() { std::path::PathBuf::from(&cwd) } else { std::path::Path::new(&cwd).join(rest) };
+        return match std::fs::canonicalize(&target) {
+            Ok(p) => Ok(Json(json!({"cwd": p.to_string_lossy().trim_start_matches(r"\\?\").to_string(), "out": "", "code": 0}))),
+            Err(_) => Ok(Json(json!({"cwd": cwd, "out": format!("No existe la carpeta: {rest}"), "code": 1}))),
+        };
+    }
+    let cwd2 = cwd.clone();
+    let res = tokio::time::timeout(std::time::Duration::from_secs(600), tokio::task::spawn_blocking(move || {
+        hidden_cmd("cmd").args(["/D", "/S", "/C", &format!("chcp 65001>nul & {cmd}")]).current_dir(&cwd2).stdin(std::process::Stdio::null()).output()
+    })).await;
+    let (out, code) = match res {
+        Ok(Ok(Ok(o))) => {
+            let mut s = String::from_utf8_lossy(&o.stdout).to_string();
+            let e = String::from_utf8_lossy(&o.stderr);
+            if !e.trim().is_empty() { s.push_str(&e); }
+            (s, o.status.code().unwrap_or(-1))
+        }
+        Ok(Ok(Err(e))) => (format!("No se pudo ejecutar: {e}"), -1),
+        Ok(Err(e)) => (format!("Error: {e}"), -1),
+        Err(_) => ("Se cortó a los 10 minutos.".into(), -1),
+    };
+    let max = 200_000;
+    let out = if out.len() > max { format!("…(recortado)\n{}", &out[out.len() - max..].chars().collect::<String>()) } else { out };
+    Ok(Json(json!({"cwd": cwd, "out": out, "code": code})))
+}
+
+async fn project_git(State(st): St, Path(id): Path<String>) -> ApiResult {
+    let p = find_project(&st, &id)?;
+    if p.path.is_empty() || !std::path::Path::new(&p.path).join(".git").exists() {
+        return Ok(Json(json!({"repo": false, "files": []})));
+    }
+    let dir = p.path.clone();
+    let v = tokio::task::spawn_blocking(move || {
+        let branch = git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default().trim().to_string();
+        let mut counts: HashMap<String, (i64, i64)> = HashMap::new();
+        let numstat = git(&dir, &["diff", "--numstat", "HEAD"]).or_else(|| git(&dir, &["diff", "--numstat"])).unwrap_or_default();
+        for l in numstat.lines() {
+            let parts: Vec<&str> = l.splitn(3, '\t').collect();
+            if parts.len() == 3 {
+                counts.insert(parts[2].to_string(), (parts[0].parse().unwrap_or(0), parts[1].parse().unwrap_or(0)));
+            }
+        }
+        let status = git(&dir, &["status", "--porcelain=v1", "-uall"]).unwrap_or_default();
+        let mut files = Vec::new();
+        for l in status.lines().take(500) {
+            if l.len() < 4 { continue; }
+            let st_code = l[..2].trim().to_string();
+            let mut path = l[3..].trim().trim_matches('"').to_string();
+            if let Some((_, to)) = path.split_once(" -> ") { path = to.to_string(); }
+            let (a, r) = if st_code == "??" {
+                let n = std::fs::read_to_string(std::path::Path::new(&dir).join(&path)).map(|s| s.lines().count() as i64).unwrap_or(0);
+                (n, 0)
+            } else {
+                counts.get(&path).copied().unwrap_or((0, 0))
+            };
+            files.push(json!({"path": path, "status": st_code, "added": a, "removed": r}));
+        }
+        json!({"repo": true, "branch": branch, "files": files})
+    }).await.unwrap_or(json!({"repo": false, "files": []}));
+    Ok(Json(v))
+}
+
+async fn project_git_diff(State(st): St, Path(id): Path<String>, Query(q): Query<PathQ>) -> ApiResult {
+    let p = find_project(&st, &id)?;
+    let dir = p.path.clone();
+    let path = q.path.clone();
+    if path.contains("..") {
+        return Err(bad("Ruta no válida"));
+    }
+    let diff = tokio::task::spawn_blocking(move || {
+        git(&dir, &["diff", "HEAD", "--", &path]).filter(|s| !s.is_empty()).or_else(|| git(&dir, &["diff", "--", &path]).filter(|s| !s.is_empty())).unwrap_or_else(|| {
+            std::fs::read_to_string(std::path::Path::new(&dir).join(&path)).map(|s| s.lines().take(3000).map(|l| format!("+{l}")).collect::<Vec<_>>().join("\n")).unwrap_or_default()
+        })
+    }).await.unwrap_or_default();
+    Ok(Json(json!({"path": q.path, "diff": diff})))
 }
 
 // ---------------- Artefactos ----------------
@@ -748,6 +864,10 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/obsidian/vaults", get(obsidian_vaults))
         .route("/mcp/{token}", post(mcp_bridge))
         .route("/api/chats/{id}/stop", post(chat_stop))
+        .route("/api/chats/{id}/live", get(chat_live))
+        .route("/api/terminal", post(terminal_run))
+        .route("/api/projects/{id}/git", get(project_git))
+        .route("/api/projects/{id}/git/diff", get(project_git_diff))
         .route("/api/chats/{id}/fork", post(chat_fork))
         .route("/api/chats/{id}/rewind", post(chat_rewind))
         .route("/api/chats/{id}/compact", post(chat_compact))

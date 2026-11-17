@@ -127,6 +127,8 @@
       const evs = db.events.filter(e => e.projectId === m[1]);
       return json({ events: evs.slice(-80), summary: '', liveTokens: Math.round(evs.reduce((s, e) => s + e.summary.length + e.task.length, 0) / 3.6) });
     }
+    if (path === '/api/terminal') return json({ out: 'La terminal funciona en la app de escritorio.', code: 1 });
+    if (path.endsWith('/git')) return json({ repo: false, files: [] });
     if (path === '/api/runs') return json({ running: [], paused: [], routines: [] });
     if (path === '/api/keep-awake') return json({ on: false });
     if (path === '/api/side-chat') { let c = db.chats.find(x => x.side && x.projectId === body?.projectId); if (!c) { c = { id: uid('c_'), projectId: body?.projectId, side: true, title: 'Chat lateral', createdAt: now(), updatedAt: now(), messages: [] }; db.chats.push(c); save(); } return json(c); }

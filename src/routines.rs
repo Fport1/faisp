@@ -1,5 +1,5 @@
 //! Rutinas: prompts que se ejecutan solos ("every:60" = cada 60 min, "daily:09:00", "manual").
-use crate::orchestrator::{run_request, AppState, RunCtx};
+use crate::orchestrator::{spawn_run, AppState, RunCtx};
 use crate::store::{now, uid, Chat};
 use chrono::{Local, Timelike};
 use std::sync::Arc;
@@ -59,12 +59,7 @@ pub async fn run_now(st: Arc<AppState>, id: &str) -> anyhow::Result<String> {
         st.mark();
         (r, chat_id)
     };
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let st2 = st.clone();
-    let cid = chat_id.clone();
-    tokio::spawn(async move {
-        let _ = run_request(st2, cid, routine.prompt.clone(), routine.agent_id.clone(), vec![], tx, RunCtx { mode: "auto".into(), effort: String::new() }).await;
-    });
+    let _ = spawn_run(st.clone(), chat_id.clone(), routine.prompt.clone(), routine.agent_id.clone(), vec![], RunCtx { mode: "auto".into(), effort: String::new() });
     Ok(chat_id)
 }
 
@@ -94,11 +89,7 @@ pub fn spawn_scheduler(st: Arc<AppState>) {
                 out
             };
             for (cid, p) in ready {
-                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                let st2 = st.clone();
-                tokio::spawn(async move {
-                    let _ = run_request(st2, cid, p.text, p.agent_id, vec![], tx, RunCtx { mode: p.mode, effort: p.effort }).await;
-                });
+                let _ = spawn_run(st.clone(), cid, p.text, p.agent_id, vec![], RunCtx { mode: p.mode, effort: p.effort });
             }
         }
     });
