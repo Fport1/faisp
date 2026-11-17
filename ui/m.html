@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>faisp</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="faisp">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="icon" href="/icon.svg">
+  <link rel="manifest" href="/m-manifest.json">
+  <link rel="stylesheet" href="/m.css">
+</head>
+<body>
+  <header class="mh">
+    <button class="ib" id="mMenu" aria-label="Chats"></button>
+    <div class="mt"><div id="mTitle">faisp</div><div class="sub" id="mSub"></div></div>
+    <button class="ib ring hidden" id="mUsage" aria-label="Uso del plan"></button>
+    <button class="ib" id="mNew" aria-label="Nuevo chat"></button>
+  </header>
+  <main id="mThread" class="thread"></main>
+  <footer class="mc">
+    <button class="jump" id="mJump" aria-label="Ir al final"></button>
+    <div id="mQueue"></div>
+    <div class="box">
+      <div class="att" id="mAtt"></div>
+      <textarea id="mIn" rows="1" placeholder="Escribe a faisp…" enterkeyhint="send"></textarea>
+      <div class="bar">
+        <button class="ib sm" id="mAdd" aria-label="Adjuntar"></button>
+        <button class="chip" id="mAgent"></button>
+        <span class="sp"></span>
+        <button class="send" id="mSend" aria-label="Enviar" disabled></button>
+      </div>
+    </div>
+  </footer>
+  <div class="drawer" id="mDrawer"><div class="dpanel"><div class="dhead"><img src="/icon.svg" alt=""><b>faisp</b><span class="alpha">alfa</span></div><div id="mProjects"></div><div class="dsec">Recientes</div><div id="mChats"></div><div class="dfoot" id="mFoot"></div></div><div class="scrim"></div></div>
+  <div class="sheet" id="mSheet"><div class="scrim"></div><div class="sbody"><div class="grab"></div><div id="mSheetBody"></div></div></div>
+  <input type="file" id="mFile" accept="image/*,video/*,audio/*,.pdf,.txt,.md" multiple hidden>
+  <script src="/vendor/marked.js"></script>
+  <script src="/vendor/purify.js"></script>
+  <script src="/m.js"></script>
+</body>
+</html>

@@ -3,3 +3,5 @@ target/
 *.json.tmp
 web/.vercel
 web/descargar/
+dist-ci/
+dist/

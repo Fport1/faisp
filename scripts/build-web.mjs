@@ -29,15 +29,26 @@ if (fs.existsSync(exe)) {
   const zip = path.join(out, 'descargar', 'faisp-windows.zip');
   execFileSync('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path '${stage}' -DestinationPath '${zip}' -Force`], { stdio: 'inherit' });
   fs.rmSync(tmp, { recursive: true, force: true });
-  // version.json: lo consulta la app para avisar de actualizaciones (y comprueba la huella)
-  const buf = fs.readFileSync(zip);
-  const version = /^version\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8'))[1];
-  let notes = ''; try { notes = execFileSync('git', ['log', '-1', '--format=%s'], { cwd: root }).toString().trim(); } catch {}
-  fs.writeFileSync(path.join(out, 'descargar', 'version.json'), JSON.stringify({ version, channel: 'alfa', date: new Date().toISOString().slice(0, 10), notes, size: buf.length, sha256: createHash('sha256').update(buf).digest('hex'), url: 'https://faisp.vercel.app/descargar/faisp-windows.zip' }, null, 2));
   console.log('Descarga de Windows:', zip, Math.round(fs.statSync(zip).size / 1024 / 1024 * 10) / 10, 'MB');
 } else console.warn('Sin target/release/faisp.exe: la web sale sin descarga de Windows (compila con cargo build --release)');
+// macOS y Linux: los compila GitHub Actions (workflow «Compilar macOS y Linux»); se bajan a dist-ci/ con
+//   gh run download <id> -D dist-ci
+fs.mkdirSync(path.join(out, 'descargar'), { recursive: true });
+for (const f of ['faisp-macos.zip', 'faisp-linux-x64.tar.gz']) {
+  const hit = ['dist-ci', 'dist-ci/faisp-macos', 'dist-ci/faisp-linux'].map(d => path.join(root, d, f)).find(p => fs.existsSync(p));
+  if (hit) { fs.copyFileSync(hit, path.join(out, 'descargar', f)); console.log('Descarga:', f); } else console.warn('Sin ' + f + ' (descárgalo de GitHub Actions a dist-ci/)');
+}
+// version.json: la app lo consulta para avisar de actualizaciones (y comprobar la huella del paquete)
+{
+  const version = /^version\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8'))[1];
+  let notes = ''; try { notes = execFileSync('git', ['log', '-1', '--format=%s'], { cwd: root }).toString().trim(); } catch {}
+  const info = f => { const p = path.join(out, 'descargar', f); if (!fs.existsSync(p)) return null; const b = fs.readFileSync(p); return { url: 'https://faisp.vercel.app/descargar/' + f, size: b.length, sha256: createHash('sha256').update(b).digest('hex') }; };
+  const files = { windows: info('faisp-windows.zip'), macos: info('faisp-macos.zip'), linux: info('faisp-linux-x64.tar.gz') };
+  const w = files.windows || {};
+  fs.writeFileSync(path.join(out, 'descargar', 'version.json'), JSON.stringify({ version, channel: 'alfa', date: new Date().toISOString().slice(0, 10), notes, size: w.size, sha256: w.sha256, url: w.url, files }, null, 2));
+}
 copy('web-src/demo-api.js', 'demo-api.js');
-for (const f of ['app.js', 'app.css', 'logos.js', 'icon.svg', 'icon-192.png', 'icon-256.png', 'icon-512.png', 'manifest.json', 'vendor/marked.js', 'vendor/purify.js', 'studio.js', 'vendor/three/three.module.min.js', 'vendor/three/LICENSE', 'vendor/three/addons/controls/OrbitControls.js', 'vendor/three/addons/loaders/GLTFLoader.js', 'vendor/three/addons/loaders/OBJLoader.js', 'vendor/three/addons/utils/BufferGeometryUtils.js']) { fs.mkdirSync(path.dirname(path.join(out, f)), { recursive: true }); copy('ui/' + f, f); }
+for (const f of ['app.js', 'app.css', 'logos.js', 'icon.svg', 'icon-192.png', 'icon-256.png', 'icon-512.png', 'manifest.json', 'vendor/marked.js', 'vendor/purify.js', 'studio.js', 'vendor/three/three.module.min.js', 'vendor/three/LICENSE', 'vendor/three/addons/controls/OrbitControls.js', 'vendor/three/addons/loaders/GLTFLoader.js', 'vendor/three/addons/loaders/OBJLoader.js', 'vendor/three/addons/utils/BufferGeometryUtils.js', 'm.css', 'm.js', 'm-manifest.json', 'apple-touch-icon.png']) { fs.mkdirSync(path.dirname(path.join(out, f)), { recursive: true }); copy('ui/' + f, f); }
 // Documento de metadatos del cliente OAuth (CIMD) para los conectores remotos
 fs.mkdirSync(path.join(out, 'oauth'), { recursive: true });
 copy('web-src/client-metadata.json', 'oauth/client-metadata.json');
@@ -49,6 +60,10 @@ app = app.replace('</body>', `  <a href="/" class="demo-note" title="Las respues
   <style>.demo-note{position:fixed;right:14px;bottom:10px;z-index:30;font-size:12px;color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:3px 12px;text-decoration:none}</style>
 </body>`);
 fs.writeFileSync(path.join(out, 'app.html'), app);
+// Versión de teléfono (demo): la misma interfaz /m que se usa emparejada con el PC
+let m = fs.readFileSync(path.join(root, 'ui/m.html'), 'utf8');
+m = m.replace('<script src="/m.js"></script>', '<script src="/demo-api.js"></script>\n  <script src="/m.js"></script>');
+fs.writeFileSync(path.join(out, 'm.html'), m);
 
 fs.writeFileSync(path.join(out, 'vercel.json'), JSON.stringify({
   cleanUrls: true,

@@ -1964,6 +1964,21 @@ async function viewSettings(v) {
   catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 }
 
+// ---------- Acceso desde el móvil (QR para emparejar el iPhone) ----------
+async function drawMobile() {
+  const box = $('#mobBox'); if (!box) return;
+  const r = await api('GET', '/api/remote').catch(() => null); if (!r || !$('#mobBox')) return;
+  const set = async body => { try { const res = await fetch('/api/remote', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Faisp': '1' }, body: JSON.stringify(body) }); if (!res.ok) throw new Error(await res.text()); } catch (e) { toast(e.message.slice(0, 160)); } drawMobile(); };
+  box.className = '';
+  box.innerHTML = `<label class="check"><input type="checkbox" id="mobOn" ${r.enabled ? 'checked' : ''}> Usar faisp desde el teléfono (misma red WiFi)</label>
+    ${r.enabled ? (r.running && r.url ? `<div class="mob-pair"><img src="/api/remote/qr.svg?t=${Date.now()}" alt="Código QR" width="190" height="190"><div><p style="margin:0 0 8px"><b>1.</b> En el iPhone, abre la <b>Cámara</b> y apunta al código (o abre este enlace en Safari).</p><p style="margin:0 0 8px"><b>2.</b> En Safari: <b>Compartir → Añadir a pantalla de inicio</b>. Se abrirá como una app, con su interfaz de teléfono.</p><p class="muted" style="font-size:12.5px;margin:0 0 8px">El PC hace el trabajo: debe estar encendido con faisp abierto. Si Windows pregunta por el firewall, permite el acceso en redes privadas.</p><div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm" id="mobCopy">Copiar enlace</button><button class="btn sm" id="mobNew" title="Los teléfonos ya emparejados tendrán que escanear el código nuevo">Nuevo código</button></div></div></div>`
+      : `<div class="test bad" style="margin-top:8px">No se pudo abrir el acceso en la red local${r.ip ? '' : ' (no encuentro la red WiFi de este equipo)'}.</div>`) : '<p class="muted" style="font-size:12.5px;margin:8px 0 0">Apagado: faisp solo acepta conexiones de este equipo.</p>'}
+    <p class="muted" style="font-size:12.5px;margin:10px 0 0">El enlace lleva una clave secreta: quien lo tenga puede usar tu faisp mientras esté en tu red. Fuera de casa, usa una VPN como Tailscale.</p>`;
+  $('#mobOn').onchange = e => set({ enabled: e.target.checked });
+  $('#mobCopy')?.addEventListener('click', async () => { await navigator.clipboard.writeText(r.url); toast('Enlace copiado'); });
+  $('#mobNew')?.addEventListener('click', async () => { if (await ask('¿Crear un código nuevo? Los teléfonos ya emparejados dejarán de funcionar hasta que lo escaneen.', { ok: 'Crear código nuevo' })) set({ newToken: true }); });
+}
+
 async function checkUpdates(silent) {
   try {
     const r = await api('GET', '/api/update/check');
@@ -1974,6 +1989,8 @@ async function checkUpdates(silent) {
 }
 async function installUpdate() {
   const u = S.update; if (!u?.available) return;
+  // En macOS y Linux: se descarga desde la web (la instalación automática es solo de Windows por ahora)
+  if (S.st?.os && S.st.os !== 'windows') { window.open('https://faisp.vercel.app/#descargar', '_blank'); toast('Descarga la versión ' + u.latest + ' y sustituye la anterior'); return; }
   if (!(await ask(`¿Actualizar faisp a la versión ${u.latest}? Se descargará (${u.size ? Math.round(u.size / 1048576 * 10) / 10 + ' MB' : 'unos MB'}), faisp se cerrará y se volverá a abrir. Tus chats, claves y ajustes se conservan.`, { ok: 'Actualizar ahora' }))) return;
   toast('Descargando la versión ' + u.latest + '…');
   try {
@@ -1992,6 +2009,7 @@ function drawUpdateChip() {
 
 function setGeneral(body, cfg, save) {
   const p = cfg.profile || {};
+  setTimeout(() => drawMobile(), 0);
   setTimeout(() => {
     const btn = $('#updCheck'); if (!btn) return;
     const draw = r => { const st = $('#updState'), box = $('#updBox'); if (!st) return; if (!r) { st.textContent = ''; return; } st.textContent = r.available ? '' : 'Tienes la última versión (' + r.latest + ')'; box.innerHTML = r.available ? `<div class="test warnbox" style="margin:8px 0">${ico('download', 13)} Hay una versión nueva: <b>${esc(r.latest)}</b>${r.notes ? ' · ' + esc(String(r.notes).slice(0, 200)) : ''} <button class="btn sm primary" id="updNow" style="margin-left:8px">Actualizar ahora</button></div>` : ''; $('#updNow')?.addEventListener('click', installUpdate); };
@@ -2006,6 +2024,7 @@ function setGeneral(body, cfg, save) {
       <div class="form two" style="margin-top:10px"><label>Idioma<select class="in" id="psl">${[['auto', 'Detectar (español / inglés)'], ['es', 'Español'], ['en-US', 'Inglés (EE. UU.)'], ['en-GB', 'Inglés (Reino Unido)']].map(([k, l]) => `<option value="${k}" ${(p.spellLang || 'auto') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
       <p class="muted" style="font-size:12.5px">Usa LanguageTool (languagetool.org): el texto que escribes en el chat se envía a su servicio para revisarlo. Pasa el ratón o pon el cursor sobre una palabra subrayada para ver la corrección; Tab la acepta.</p></section>
     <section class="block"><h2>Apariencia</h2><div class="row">${['light', 'dark', 'system'].map(t => `<button class="btn ${(document.documentElement.dataset.theme || 'system') === t ? 'primary' : ''}" data-theme="${t}">${{ light: 'Claro', dark: 'Oscuro', system: 'Sistema' }[t]}</button>`).join('')}</div></section>
+    <section class="block" id="mobBlock"><h2>Móvil</h2><div id="mobBox" class="muted" style="font-size:13px">Cargando…</div></section>
     <section class="block"><h2>Actualizaciones</h2><div class="row" style="gap:10px;flex-wrap:wrap"><span>Versión <b>${esc(S.st.version || '')}</b> <span class="alpha-tag">alfa</span></span><span class="muted" id="updState" style="font-size:13px;flex:1"></span><button class="btn sm" id="updCheck">${ico('refresh', 13)} Buscar actualizaciones</button></div><div id="updBox"></div><p class="muted" style="font-size:12.5px">faisp está en fase alfa: puede tener fallos. Al actualizar se cierra, se instala la versión nueva y se vuelve a abrir; tus chats, claves y ajustes no se tocan.</p></section>
     <section class="block"><h2>Datos</h2><p>Todo se guarda en tu ordenador: <span class="mono">${esc(S.st.dataDir)}</span></p></section>
     <button class="btn primary" id="sv">Guardar</button>`;

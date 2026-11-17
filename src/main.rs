@@ -15,6 +15,7 @@ mod mcp;
 mod mcp_http;
 mod orchestrator;
 mod providers;
+mod remote;
 mod routines;
 mod store;
 mod window;
@@ -125,6 +126,14 @@ async fn start_server(a: &Args, data: std::path::PathBuf) -> anyhow::Result<Opti
         });
     }
     routines::spawn_scheduler(st.clone());
+    {
+        let st = st.clone();
+        tokio::spawn(async move {
+            if let Err(e) = remote::apply(st).await {
+                eprintln!("Acceso desde el móvil no disponible: {e}");
+            }
+        });
+    }
     println!("faisp {} escuchando en {url}  (datos: {})", env!("CARGO_PKG_VERSION"), data.display());
     let app = api::router(st.clone());
     let shutdown_st = st.clone();

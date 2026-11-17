@@ -101,6 +101,10 @@ async fn ui(name: &'static str) -> Response {
         "vendor/marked.js" => include_str!("../ui/vendor/marked.js"),
         "vendor/purify.js" => include_str!("../ui/vendor/purify.js"),
         "studio.js" => include_str!("../ui/studio.js"),
+        "m.html" => include_str!("../ui/m.html"),
+        "m.js" => include_str!("../ui/m.js"),
+        "m.css" => include_str!("../ui/m.css"),
+        "m-manifest.json" => include_str!("../ui/m-manifest.json"),
         "vendor/three/three.module.min.js" => include_str!("../ui/vendor/three/three.module.min.js"),
         "vendor/three/addons/controls/OrbitControls.js" => include_str!("../ui/vendor/three/addons/controls/OrbitControls.js"),
         "vendor/three/addons/loaders/GLTFLoader.js" => include_str!("../ui/vendor/three/addons/loaders/GLTFLoader.js"),
@@ -669,6 +673,46 @@ async fn update_install(State(st): St, headers: axum::http::HeaderMap) -> ApiRes
     Ok(Json(json!({"ok": true, "version": latest})))
 }
 
+// ---------------- Acceso desde el móvil ----------------
+
+fn remote_info(st: &AppState) -> Value {
+    let c = st.cfg.read().unwrap().remote.clone();
+    let port = if c.port == 0 { 4320 } else { c.port };
+    let ip = crate::remote::lan_ip();
+    let url = ip.as_ref().map(|ip| format!("http://{ip}:{port}/?t={}", c.token));
+    json!({"enabled": c.enabled, "running": crate::remote::running(), "port": port, "ip": ip, "url": url})
+}
+async fn remote_get(State(st): St) -> Json<Value> {
+    Json(remote_info(&st))
+}
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct RemoteBody {
+    enabled: Option<bool>,
+    new_token: bool,
+}
+async fn remote_set(State(st): St, headers: axum::http::HeaderMap, Json(b): Json<RemoteBody>) -> ApiResult {
+    if headers.get("x-faisp").is_none() {
+        return Err((StatusCode::FORBIDDEN, "no".into()));
+    }
+    {
+        let mut c = st.cfg.write().unwrap();
+        if let Some(e) = b.enabled { c.remote.enabled = e; }
+        if b.new_token || c.remote.token.len() < 16 { c.remote.token = crate::remote::new_token(); }
+        if c.remote.port == 0 { c.remote.port = 4320; }
+    }
+    st.mark_cfg();
+    crate::remote::apply(st.clone()).await.map_err(|e| bad(format!("No se pudo abrir el puerto en la red local: {e}")))?;
+    Ok(Json(remote_info(&st)))
+}
+async fn remote_qr(State(st): St) -> Response {
+    let Some(url) = remote_info(&st)["url"].as_str().map(String::from) else { return StatusCode::NOT_FOUND.into_response() };
+    match qrcode::QrCode::new(url.as_bytes()) {
+        Ok(q) => ([(header::CONTENT_TYPE, "image/svg+xml"), (header::CACHE_CONTROL, "no-store")], q.render::<qrcode::render::svg::Color>().min_dimensions(220, 220).quiet_zone(true).build()).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 // ---------------- Artefactos ----------------
 
 #[derive(Deserialize)]
@@ -1047,6 +1091,13 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/chats/{id}/stop", post(chat_stop))
         .route("/api/chats/{id}/live", get(chat_live))
         .route("/api/terminal", post(terminal_run))
+        .route("/api/remote", get(remote_get).post(remote_set))
+        .route("/api/remote/qr.svg", get(remote_qr))
+        .route("/m", get(|| ui("m.html")))
+        .route("/m.js", get(|| ui("m.js")))
+        .route("/m.css", get(|| ui("m.css")))
+        .route("/m-manifest.json", get(|| ui("m-manifest.json")))
+        .route("/apple-touch-icon.png", get(|| png(include_bytes!("../ui/apple-touch-icon.png"))))
         .route("/api/update/check", get(update_check))
         .route("/api/update/install", post(update_install))
         .route("/api/projects/{id}/git", get(project_git))

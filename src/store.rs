@@ -225,6 +225,16 @@ pub struct Config {
     pub defaults: Defaults,
     /// Carpeta de la bóveda de Obsidian conectada (vacío = sin conectar)
     pub obsidian_vault: String,
+    /// Acceso desde el móvil (red local, con token)
+    pub remote: RemoteCfg,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RemoteCfg {
+    pub enabled: bool,
+    pub token: String,
+    pub port: u16,
 }
 
 // ---------------- Datos ----------------

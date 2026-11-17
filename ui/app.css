@@ -613,3 +613,7 @@ body.panel-open #panel { min-width: 360px; }
 .alpha-tag { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent2); border: 1px solid color-mix(in srgb, var(--accent2) 45%, transparent); border-radius: 6px; padding: 0 5px; margin-left: 4px; vertical-align: middle; line-height: 16px; }
 .upd-chip { display: flex; align-items: center; gap: 8px; width: calc(100% - 16px); margin: 0 8px 8px; padding: 8px 10px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--accent2) 45%, transparent); background: color-mix(in srgb, var(--accent2) 12%, transparent); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
 .upd-chip span { flex: 1; } .upd-chip b { color: var(--accent2); }
+
+.mob-pair { display: flex; gap: 16px; align-items: flex-start; margin-top: 12px; flex-wrap: wrap; }
+.mob-pair img { background: #fff; border-radius: 12px; padding: 6px; flex: none; }
+.mob-pair > div { flex: 1; min-width: 220px; font-size: 13.5px; }
