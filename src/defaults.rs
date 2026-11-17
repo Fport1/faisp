@@ -69,6 +69,26 @@ fn agent(id: &str, name: &str, icon: &str, color: &str, model: &str, effort: &st
 
 pub const OPUS: &str = "anthropic:claude-opus-5-5";
 
+/// Modelo, respaldos y palabras clave recomendados por agente (cada tarea al modelo justo).
+pub fn recommended(id: &str) -> Option<(&'static str, &'static [&'static str])> {
+    Some(match id {
+        "orquestador" => ("anthropic:claude-haiku-5-5", &["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-20b", "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast"]),
+        "codigo" => (OPUS, &["anthropic:claude-sonnet-5-5", "groq:openai/gpt-oss-120b", "ollama:qwen2.5-coder"]),
+        "modelos" => ("gemini:gemini-4-hydrogen", &["anthropic:claude-opus-5-5", "gemini:gemini-3.8-flash"]),
+        "narrativa" => ("chatgpt:", &["anthropic:claude-sonnet-5-5", "gemini:gemini-3.8-flash"]),
+        "contenido" => ("anthropic:claude-sonnet-5-5", &["gemini:gemini-4-hydrogen", "groq:openai/gpt-oss-120b"]),
+        "investigador" => ("anthropic:claude-sonnet-5-5", &["xai:grok-4.7", "gemini:gemini-3.8-flash"]),
+        "revisor" => ("anthropic:claude-haiku-5-5", &["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-20b", "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast"]),
+        "launcher" => ("anthropic:claude-sonnet-5-5", &["anthropic:claude-opus-5-5"]),
+        "audio" => ("anthropic:claude-sonnet-5-5", &["anthropic:claude-haiku-5-5"]),
+        "multimedia" => ("anthropic:claude-haiku-5-5", &["anthropic:claude-sonnet-5-5"]),
+        _ => return None,
+    })
+}
+
+const AUDIO_KW: &[&str] = &["voz", "voces", "narración", "narracion", "narrador", "doblaje", "voz en off", "diálogos hablados", "dialogos hablados", "sonido", "sonidos", "efecto de sonido", "efectos de sonido", "música", "musica", "banda sonora", "elevenlabs", "tts", "genera audio", "crea audio"];
+const MEDIA_KW: &[&str] = &["vídeo", "video", "videos", "vídeos", "clip", "grabación", "grabacion", "transcribe", "transcripción", "transcripcion", "subtítulos", "subtitulos", "mira este", "mira esta", "qué pasa en", "analiza el audio", "analiza la imagen", "analiza el vídeo", "describe la imagen", "minuto"];
+
 pub fn default_agents() -> Vec<Agent> {
     let mut v = vec![
         agent("orquestador", "Orquestador", "compass", "#d97757", OPUS, "medium",
@@ -117,6 +137,22 @@ pub fn default_agents() -> Vec<Agent> {
             &["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-20b", "ollama:qwen2.5:7b"]),
     ];
     for a in v.iter_mut() {
+        if let Some((m, fb)) = recommended(&a.id) {
+            a.model = m.into();
+            a.fallbacks = fb.iter().map(|s| s.to_string()).collect();
+        }
+        if a.id == "orquestador" || a.id == "revisor" {
+            a.effort = "low".into();
+        }
+        if a.id == "audio" {
+            a.keywords = AUDIO_KW.iter().map(|s| s.to_string()).collect();
+            a.description = "CREA audio con tus voces de ElevenLabs: diálogos hablados, narración, efectos de sonido y música; los prepara para el juego.".into();
+        }
+        if a.id == "multimedia" {
+            a.name = "Analista multimedia".into();
+            a.keywords = MEDIA_KW.iter().map(|s| s.to_string()).collect();
+            a.description = "ANALIZA vídeos, audios e imágenes que ya existen (con Gemini): transcribe, describe, encuentra momentos.".into();
+        }
         if a.id == "investigador" {
             a.web_search = true;
         }
@@ -137,7 +173,7 @@ pub fn default_config() -> Config {
     pricing.insert("claude-haiku-5-5".into(), vec![0.1, 0.5, 0.01]);
 
     Config {
-        version: 3,
+        version: 4,
         providers: default_providers(),
         agents: default_agents(),
         routing: Routing::default(),
@@ -184,7 +220,26 @@ pub fn migrate(cfg: &mut Config) {
         }
         cfg.version = 2;
     }
-    cfg.version = 3;
+    if cfg.version < 3 {
+        cfg.version = 3;
+    }
+    // v4: cada agente con el modelo justo (no todo Opus) y papeles de audio separados
+    if cfg.version < 4 {
+        let defs = default_agents();
+        for a in cfg.agents.iter_mut().filter(|a| a.builtin) {
+            if let Some(d) = defs.iter().find(|d| d.id == a.id) {
+                a.model = d.model.clone();
+                a.fallbacks = d.fallbacks.clone();
+                if a.id == "orquestador" || a.id == "revisor" { a.effort = "low".into(); }
+                if a.id == "audio" || a.id == "multimedia" {
+                    a.name = d.name.clone();
+                    a.keywords = d.keywords.clone();
+                    a.description = d.description.clone();
+                }
+            }
+        }
+        cfg.version = 4;
+    }
     // Cloudflare como respaldo gratuito del orquestador y el revisor
     for a in cfg.agents.iter_mut().filter(|a| a.builtin && (a.id == "orquestador" || a.id == "revisor")) {
         let cf = "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast".to_string();

@@ -108,7 +108,7 @@
       const ready = Object.fromEntries(Object.keys(db.config.providers).map(k => [k, false]));
       return json({
         config: db.config, providerReady: ready, agents: db.config.agents.filter(a => !a.disabled), projects: db.projects,
-        chats: [...db.chats].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(c => ({ id: c.id, title: c.title, projectId: c.projectId, updatedAt: c.updatedAt, count: c.messages.length })),
+        chats: [...db.chats].filter(c => !c.side).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(c => ({ id: c.id, title: c.title, projectId: c.projectId, updatedAt: c.updatedAt, count: c.messages.length })),
         routines: db.routines, extensions: { plugins: [{ id: 'minecraft-modding', name: 'Minecraft modding' }], skills: 2, connectors: 0 }, monthSpend: 0, dataDir: '(este navegador)', version: '0.2.0-web',
       });
     }
@@ -126,6 +126,17 @@
       if (method === 'DELETE') { db.events = db.events.filter(e => e.projectId !== m[1]); save(); return json({ ok: true }); }
       const evs = db.events.filter(e => e.projectId === m[1]);
       return json({ events: evs.slice(-80), summary: '', liveTokens: Math.round(evs.reduce((s, e) => s + e.summary.length + e.task.length, 0) / 3.6) });
+    }
+    if (path === '/api/runs') return json({ running: [], paused: [], routines: [] });
+    if (path === '/api/keep-awake') return json({ on: false });
+    if (path === '/api/side-chat') { let c = db.chats.find(x => x.side && x.projectId === body?.projectId); if (!c) { c = { id: uid('c_'), projectId: body?.projectId, side: true, title: 'Chat lateral', createdAt: now(), updatedAt: now(), messages: [] }; db.chats.push(c); save(); } return json(c); }
+    if (path === '/api/upload' || path === '/api/file') return fail(desktopOnly);
+    if ((m = path.match(/^\/api\/chats\/([^/]+)\/context$/))) { const c = db.chats.find(x => x.id === m[1]); const t = Math.round(JSON.stringify(c?.messages || []).length / 4); return json({ tokens: t, fullTokens: t, window: 1000000, messages: c?.messages.length || 0, summarized: 0, hasSummary: false, pending: null }); }
+    if ((m = path.match(/^\/api\/chats\/([^/]+)\/(stop|compact|resume)$/))) return json({ ok: true });
+    if ((m = path.match(/^\/api\/chats\/([^/]+)\/(fork|rewind)$/))) {
+      const c = db.chats.find(x => x.id === m[1]); const i = c.messages.findIndex(x => x.id === body.messageId);
+      if (m[2] === 'fork') { const n = { ...c, id: uid('c_'), title: c.title + ' (bifurcado)', messages: c.messages.slice(0, i + 1), chapters: [] }; db.chats.push(n); save(); return json(n); }
+      const r = c.messages[i]; c.messages = c.messages.slice(0, i); save(); return json({ text: r?.content || '', attachments: r?.attachments || [] });
     }
     if (path === '/api/chats' && method === 'POST') { const c = { id: uid('c_'), projectId: body.projectId, title: 'Nuevo chat', createdAt: now(), updatedAt: now(), messages: [] }; db.chats.push(c); save(); return json(c); }
     if ((m = path.match(/^\/api\/chats\/([^/]+)\/send$/))) {

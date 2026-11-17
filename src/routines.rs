@@ -80,6 +80,26 @@ pub fn spawn_scheduler(st: Arc<AppState>) {
             for id in due_ids {
                 let _ = run_now(st.clone(), &id).await;
             }
+            // Chats pausados por el límite de Claude: continuar al reiniciarse
+            let ready: Vec<(String, crate::store::PendingResume)> = {
+                let mut db = st.db.lock().unwrap();
+                let t = chrono::Utc::now().timestamp();
+                let mut out = Vec::new();
+                for c in db.chats.iter_mut() {
+                    if c.pending.as_ref().map(|p| p.resume_at <= t).unwrap_or(false) {
+                        out.push((c.id.clone(), c.pending.take().unwrap()));
+                    }
+                }
+                if !out.is_empty() { st.mark(); }
+                out
+            };
+            for (cid, p) in ready {
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                let st2 = st.clone();
+                tokio::spawn(async move {
+                    let _ = run_request(st2, cid, p.text, p.agent_id, vec![], tx, RunCtx { mode: p.mode, effort: p.effort }).await;
+                });
+            }
         }
     });
 }

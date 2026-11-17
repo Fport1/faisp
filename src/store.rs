@@ -78,10 +78,12 @@ pub struct Routing {
     pub economy: bool,
     /// Usar primero tu suscripción de Claude (vía Claude Code) para los modelos claude-*.
     pub use_subscription: bool,
+    /// Si se agota el límite de Claude, continuar solo cuando se reinicie
+    pub auto_continue: bool,
 }
 impl Default for Routing {
     fn default() -> Self {
-        Self { planner: "llm".into(), summarizer: "heuristic".into(), default_agent: "codigo".into(), economy: false, use_subscription: false }
+        Self { planner: "llm".into(), summarizer: "heuristic".into(), default_agent: "codigo".into(), economy: false, use_subscription: false, auto_continue: true }
     }
 }
 
@@ -301,6 +303,8 @@ pub struct StepResult {
     pub usage: Option<UsageRow>,
     pub artifacts: Vec<String>,
     pub error: bool,
+    pub effort: String,
+    pub changes: Vec<FileChange>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -327,7 +331,43 @@ pub struct Chat {
     pub created_at: String,
     pub updated_at: String,
     pub routine_id: Option<String>,
+    /// Chat lateral (no aparece en recientes)
+    pub side: bool,
+    /// Resumen compactado de la parte antigua de la conversación
+    pub summary: String,
+    /// Mensajes ya incluidos en el resumen
+    pub summarized_upto: usize,
+    pub chapters: Vec<Chapter>,
+    /// Envío pendiente para cuando se reinicie el límite de Claude
+    pub pending: Option<PendingResume>,
     pub messages: Vec<Message>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Chapter {
+    pub message_id: String,
+    pub title: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PendingResume {
+    pub text: String,
+    pub agent_id: Option<String>,
+    pub mode: String,
+    pub effort: String,
+    /// segundos UNIX
+    pub resume_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FileChange {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    pub applied: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]

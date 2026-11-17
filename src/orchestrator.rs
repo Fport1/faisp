@@ -35,6 +35,13 @@ pub struct AppState {
     pub port: std::sync::atomic::AtomicU16,
     /// Herramientas propias de faisp expuestas como MCP durante un paso: token → (definiciones, ejecutor)
     pub bridge: Mutex<HashMap<String, (Vec<Value>, ToolExec)>>,
+    /// Cancelación por chat (botón detener / forzar envío)
+    pub cancels: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    /// Ejecuciones en curso: chat → (título, inicio, proyecto)
+    pub running: Mutex<HashMap<String, (String, String, Option<String>)>>,
+    /// Cambios de archivos por paso: "chat:paso" → cambios
+    pub changes: Mutex<HashMap<String, Vec<FileChange>>>,
+    pub keep_awake: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 impl AppState {
@@ -68,6 +75,10 @@ impl AppState {
             picked: Default::default(),
             port: std::sync::atomic::AtomicU16::new(4317),
             bridge: Default::default(),
+            cancels: Default::default(),
+            running: Default::default(),
+            changes: Default::default(),
+            keep_awake: Default::default(),
         });
         st.flush();
         st
@@ -314,7 +325,7 @@ async fn llm_plan(st: &Arc<AppState>, project: &Option<Project>, chat: &Chat, te
         (if s.is_empty() { "(ninguna)".into() } else { s }, if c.is_empty() { "(ninguno)".into() } else { c })
     };
     let stable = format!(
-        "{}\n\n## Equipo disponible\n{}\n\n## Skills (instrucciones extra que puedes adjuntar a un paso)\n{}\n\n## Conectores (fuentes de contexto externas)\n{}\n\n## Cómo respondes\nDevuelve SOLO un objeto JSON, sin texto alrededor:\n{{\"reply\": null, \"steps\": [{{\"id\":\"s1\",\"agent\":\"<id>\",\"task\":\"<instrucción concreta y autocontenida>\",\"effort\":\"low|medium|high|xhigh\",\"dependsOn\":[],\"files\":[],\"skills\":[],\"connectors\":[]}}]}}\nReglas:\n- Usa el MÍNIMO de pasos (casi siempre 1; máximo 4). Cada agente solo hace lo suyo.\n- Modelos 3D → \"modelos\"; textos/lore → \"narrativa\"; diseño de contenido → \"contenido\"; código → \"codigo\"; revisión → \"revisor\".\n- Si un paso necesita el resultado de otro, ponlo en dependsOn. Los pasos sin dependencias corren en paralelo.\n- \"files\": hasta 5 archivos del proyecto imprescindibles, elegidos del árbol (los agentes además pueden explorar con herramientas).\n- \"effort\" por paso, el mínimo que baste: low = respuestas cortas, preguntas simples, textos breves o cambios triviales; medium = tareas normales; high = código no trivial, diseño o análisis; xhigh = solo arquitectura, depuración difícil o refactors grandes.\n- Si es un saludo o una pregunta trivial que puedes contestar en 1-3 frases, ponla en \"reply\" y \"steps\": [].",
+        "{}\n\n## Equipo disponible\n{}\n\n## Skills (instrucciones extra que puedes adjuntar a un paso)\n{}\n\n## Conectores (fuentes de contexto externas)\n{}\n\n## Cómo respondes\nDevuelve SOLO un objeto JSON, sin texto alrededor:\n{{\"reply\": null, \"steps\": [{{\"id\":\"s1\",\"agent\":\"<id>\",\"task\":\"<instrucción concreta y autocontenida>\",\"effort\":\"low|medium|high|xhigh\",\"dependsOn\":[],\"files\":[],\"skills\":[],\"connectors\":[]}}]}}\nReglas:\n- Usa el MÍNIMO de pasos (casi siempre 1; máximo 4). Cada agente solo hace lo suyo.\n- Modelos 3D → \"modelos\"; textos/lore → \"narrativa\"; diseño de contenido → \"contenido\"; código → \"codigo\"; revisión → \"revisor\".\n- CREAR voces, diálogos hablados, sonidos o música → \"audio\" (ElevenLabs). ANALIZAR vídeos, audios o imágenes existentes → \"multimedia\" (Gemini).\n- Si un paso necesita el resultado de otro, ponlo en dependsOn. Los pasos sin dependencias corren en paralelo.\n- \"files\": hasta 5 archivos del proyecto imprescindibles, elegidos del árbol (los agentes además pueden explorar con herramientas).\n- \"effort\" por paso, el mínimo que baste: low = respuestas cortas, preguntas simples, textos breves o cambios triviales; medium = tareas normales; high = código no trivial, diseño o análisis; xhigh = solo arquitectura, depuración difícil o refactors grandes.\n- Si es un saludo o una pregunta trivial que puedes contestar en 1-3 frases, ponla en \"reply\" y \"steps\": [].",
         orch.system, team_text(&agents), skills_list, conn_list
     );
     let tree = project.as_ref().filter(|p| !p.path.is_empty()).map(|p| compact_tree(&project_tree(std::path::Path::new(&p.path), 600), 60)).unwrap_or_default();
@@ -383,8 +394,24 @@ async fn llm_plan(st: &Arc<AppState>, project: &Option<Project>, chat: &Chat, te
 struct StepSink {
     tx: Tx,
     step: String,
+    chat: String,
+    st: Arc<AppState>,
 }
+
+pub fn record_change(st: &AppState, tx: &Tx, chat: &str, step: &str, path: &str, added: usize, removed: usize, applied: bool) {
+    let _ = tx.send(("file_change".into(), json!({"stepId": step, "path": path, "added": added, "removed": removed, "applied": applied})));
+    let mut m = st.changes.lock().unwrap();
+    let list = m.entry(format!("{chat}:{step}")).or_default();
+    match list.iter_mut().find(|c| c.path == path) {
+        Some(c) => { c.added += added; c.removed += removed; c.applied |= applied; }
+        None => list.push(FileChange { path: path.into(), added, removed, applied }),
+    }
+}
+
 impl Sink for StepSink {
+    fn change(&self, path: &str, added: usize, removed: usize, applied: bool) {
+        record_change(&self.st, &self.tx, &self.chat, &self.step, path, added, removed, applied);
+    }
     fn text(&self, t: &str) {
         let _ = self.tx.send(("delta".into(), json!({"stepId": self.step, "text": t})));
     }
@@ -615,6 +642,8 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
                 if let Decision::Deny(m) = decision {
                     return m.to_string();
                 }
+                let old = safe_path(&project, &path).ok().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+                let (d_add, d_rem) = providers::diff_counts(&old, &content);
                 let lang = path.rsplit('.').next().unwrap_or("").to_string();
                 let title = path.rsplit('/').next().unwrap_or(&path).to_string();
                 let (id, ver) = {
@@ -645,6 +674,7 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
                     format!("Propuesta guardada como artefacto ({path}, versión {ver}). El usuario la revisará y aplicará.")
                 };
                 st.mark();
+                record_change(&st, &tx, &chat_id, &step_id, &path, d_add, d_rem, applied);
                 let _ = tx.send(("artifact".into(), json!({"stepId": step_id, "id": id, "title": title, "path": path, "lang": lang, "version": ver, "applied": applied})));
                 return msg;
             }
@@ -967,8 +997,11 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
 
     // Historial reciente del chat (recortado) + tarea
     let mut msgs: Vec<(String, String)> = Vec::new();
+    if !chat.summary.trim().is_empty() {
+        msgs.push(("user".into(), format!("[Resumen de la conversación anterior, compactada para ahorrar contexto]\n{}", chat.summary)));
+    }
     let hist = &chat.messages[..chat.messages.len().saturating_sub(1)];
-    let start = hist.len().saturating_sub(b.history_turns * 2);
+    let start = hist.len().saturating_sub(b.history_turns * 2).max(chat.summarized_upto.min(hist.len()));
     for m in &hist[start..] {
         let role = if m.role == "user" { "user" } else { "assistant" };
         let content = if role == "user" { m.content.clone() } else { m.content.chars().take(1500).collect() };
@@ -996,6 +1029,7 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     }
 
     let use_tools = !specs.is_empty();
+    let effort_used = effort.clone();
     let chain = providers::model_chain(&cfg, &agent.model, &agent.fallbacks, agent.prefer_free || cfg.routing.economy);
     let volatile = parts.join("\n\n");
     let est = estimate_tokens(&stable) + estimate_tokens(&volatile) + msgs.iter().map(|m| estimate_tokens(&m.1)).sum::<usize>();
@@ -1043,7 +1077,7 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
         mcp_config,
         mcp_allow,
     };
-    let sink = StepSink { tx: tx.clone(), step: step.id.clone() };
+    let sink = StepSink { tx: tx.clone(), step: step.id.clone(), chat: chat.id.clone(), st: st.clone() };
     let chain_result = providers::stream_chain(&st.http, &cfg, &chain, req, &sink, exec).await;
     if let Some(t) = &bridge_token {
         st.bridge.lock().unwrap().remove(t);
@@ -1070,9 +1104,11 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
         st.mark();
     }
     let _ = tx.send(("step_done".into(), json!({"stepId": step.id, "usage": usage, "summary": summary, "model": r.model, "fallbacks": fallback_notes})));
+    let step_changes = st.changes.lock().unwrap().remove(&format!("{}:{}", chat.id, step.id)).unwrap_or_default();
     StepResult {
         id: step.id, agent_id: agent.id, agent_name: agent.name, icon: agent.icon, color: agent.color, model: r.model, task: step.task,
         text: r.text, files, skills: skills.into_iter().map(|s| s.id).collect(), tools: r.tool_log, usage: Some(usage), artifacts: art_ids, error: false,
+        effort: effort_used, changes: step_changes,
     }
 }
 
@@ -1145,6 +1181,10 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
         (chat, project)
     };
     let _ = tx.send(("status".into(), json!({"text": if agent_id.is_some() { "Enviando al agente…" } else { "Planificando…" }})));
+    let cancel = Arc::new(tokio::sync::Notify::new());
+    st.cancels.lock().unwrap().insert(chat_id.clone(), cancel.clone());
+    st.running.lock().unwrap().insert(chat_id.clone(), (chat.title.clone(), now(), chat.project_id.clone()));
+    let run_ctx = (agent_id.clone(), ctx.clone());
 
     let planner = st.cfg.read().unwrap().routing.planner.clone();
     let agent_id = agent_id.or_else(|| {
@@ -1159,7 +1199,10 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
     } else if planner == "heuristic" {
         (None, heuristic_plan(&st, &text, None), None)
     } else {
-        llm_plan(&st, &project, &chat, &text).await
+        tokio::select! {
+            p = llm_plan(&st, &project, &chat, &text) => p,
+            _ = cancel.notified() => (Some("*Detenido.*".to_string()), vec![], None),
+        }
     };
 
     let mut assistant = Message { id: uid("m_"), role: "assistant".into(), ts: now(), plan_usage: plan_usage.clone(), ..Default::default() };
@@ -1190,11 +1233,20 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
                 (ready, rest)
             };
             pending = rest;
-            let futs = wave.iter().map(|s| {
+            let handles: Vec<tokio::task::JoinHandle<StepResult>> = wave.iter().map(|s| {
                 let deps: Vec<(String, String, String)> = s.depends_on.iter().filter_map(|d| outputs.get(d).map(|o| (d.clone(), o.agent_name.clone(), o.text.clone()))).collect();
                 tokio::spawn(run_step(st.clone(), s.clone(), project.clone(), chat.clone(), text.clone(), deps, tx.clone(), ctx.clone()))
-            });
-            let results = futures_util::future::join_all(futs).await;
+            }).collect();
+            let aborts: Vec<tokio::task::AbortHandle> = handles.iter().map(|h| h.abort_handle()).collect();
+            let results = tokio::select! {
+                r = futures_util::future::join_all(handles) => r,
+                _ = cancel.notified() => {
+                    for a in &aborts { a.abort(); }
+                    let _ = tx.send(("stopped".into(), json!({})));
+                    pending.clear();
+                    wave.iter().map(|s| Ok(StepResult { id: s.id.clone(), agent_id: s.agent.clone(), text: "*Detenido por el usuario.*".into(), error: true, ..Default::default() })).collect()
+                }
+            };
             for (s, r) in wave.iter().zip(results) {
                 let r = r.unwrap_or_else(|e| StepResult { id: s.id.clone(), agent_id: s.agent.clone(), text: format!("⚠️ Error interno: {e}"), error: true, ..Default::default() });
                 assistant.steps.push(r.clone());
@@ -1208,17 +1260,94 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
         };
     }
 
+    // Límite de Claude agotado: continuar solo cuando se reinicie (como Claude Code)
+    let hit_limit = assistant.steps.iter().any(|s| s.error && is_limit_error(&s.text));
+    let auto_continue = st.cfg.read().unwrap().routing.auto_continue;
     {
         let mut db = st.db.lock().unwrap();
         if let Some(c) = db.chats.iter_mut().find(|c| c.id == chat_id) {
             c.messages.push(assistant.clone());
             c.updated_at = now();
+            if hit_limit && auto_continue {
+                let resume_at = limit_reset_at().unwrap_or(chrono::Utc::now().timestamp() + 3600) + 60;
+                c.pending = Some(PendingResume { text: "Continúa con la tarea anterior desde donde lo dejaste.".into(), agent_id: run_ctx.0.clone(), mode: run_ctx.1.mode.clone(), effort: run_ctx.1.effort.clone(), resume_at });
+                let _ = tx.send(("paused".into(), json!({"resumeAt": resume_at})));
+            }
         }
         st.mark();
     }
+    st.cancels.lock().unwrap().remove(&chat_id);
+    st.running.lock().unwrap().remove(&chat_id);
     if let Some(p) = &project {
         maybe_compress(&st, &p.id).await;
     }
+    compact_chat(&st, &chat_id, false).await;
     let _ = tx.send(("done".into(), json!({"message": assistant})));
     Ok(assistant)
+}
+
+pub fn is_limit_error(t: &str) -> bool {
+    let l = t.to_lowercase();
+    ["usage limit", "rate limit", "limit reached", "límite", "limite", "rate_limit", "quota", "429"].iter().any(|k| l.contains(k))
+}
+
+/// Momento de reinicio del límite de Claude más próximo que esté agotado.
+pub fn limit_reset_at() -> Option<i64> {
+    let l = providers::claude_limits()?;
+    let info = &l["info"];
+    if let Some(w) = info["unifiedWindows"].as_object() {
+        let mut best: Option<i64> = None;
+        for v in w.values() {
+            if v["utilization"].as_f64().unwrap_or(0.0) >= 0.99 {
+                if let Some(r) = v["resetsAt"].as_i64() {
+                    best = Some(best.map(|b| b.max(r)).unwrap_or(r));
+                }
+            }
+        }
+        if best.is_some() {
+            return best;
+        }
+    }
+    info["resetsAt"].as_i64()
+}
+
+/// Compacta la parte antigua de un chat en un resumen (como la compactación de Claude Code).
+pub async fn compact_chat(st: &Arc<AppState>, chat_id: &str, force: bool) {
+    let (cfg, chat) = {
+        let db = st.db.lock().unwrap();
+        let Some(c) = db.chats.iter().find(|c| c.id == chat_id).cloned() else { return };
+        (st.cfg.read().unwrap().clone(), c)
+    };
+    let keep = if force { 2 } else { cfg.budget.history_turns * 2 };
+    let n = chat.messages.len();
+    if n <= keep || (!force && n < keep + 6) {
+        return;
+    }
+    let upto = n - keep;
+    if upto <= chat.summarized_upto {
+        return;
+    }
+    let chunk: Vec<String> = chat.messages[chat.summarized_upto..upto].iter().map(|m| {
+        if m.role == "user" { format!("Usuario: {}", m.content.chars().take(400).collect::<String>()) } else { format!("Equipo: {}", heuristic_summary(&m.content, 400)) }
+    }).collect();
+    let digest = chunk.join("\n");
+    let mut summary = format!("{}\n{}", chat.summary, digest).trim().to_string();
+    if cfg.routing.summarizer == "llm" || force || summary.chars().count() > 6000 {
+        if let Some(rev) = st.agent("revisor") {
+            let req = LlmRequest { model_ref: rev.model.clone(), stable: "Resume esta conversación entre un usuario y un equipo de IAs en una memoria breve y fiel (máx. 300 palabras): objetivos, decisiones, archivos tocados, pendientes. En español.".into(), messages: vec![("user".into(), summary.clone())], max_tokens: 2000, effort: "low".into(), ..Default::default() };
+            let chain = providers::model_chain(&cfg, &rev.model, &rev.fallbacks, true);
+            if let Ok((r, _)) = providers::stream_chain(&st.http, &cfg, &chain, req, &NullSink, None).await {
+                record_usage(st, chat.project_id.clone(), Some(chat_id.into()), "revisor", "compact", &r);
+                if !r.demo && !r.text.trim().is_empty() {
+                    summary = r.text.trim().to_string();
+                }
+            }
+        }
+    }
+    let mut db = st.db.lock().unwrap();
+    if let Some(c) = db.chats.iter_mut().find(|c| c.id == chat_id) {
+        c.summary = summary.chars().rev().take(8000).collect::<Vec<_>>().into_iter().rev().collect();
+        c.summarized_upto = upto;
+    }
+    st.mark();
 }

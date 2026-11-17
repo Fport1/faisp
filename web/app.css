@@ -387,3 +387,39 @@ kbd { display: inline-block; min-width: 22px; text-align: center; font: 600 11.5
 .card.pu .row { flex-wrap: wrap; row-gap: 6px; }
 
 .chip.effchip { font-size: 11px; padding: 1px 8px; }
+
+/* ---------- v9: chat como Claude ---------- */
+.msg-user > div, .msg-ai { position: relative; }
+.msg-actions { display: flex; gap: 2px; opacity: 0; transition: opacity .12s; margin-top: 4px; }
+.msg-user .msg-actions { justify-content: flex-end; }
+.msg-user:hover .msg-actions, .msg-ai:hover .msg-actions { opacity: 1; }
+.msg-actions .icon-btn { width: 28px; height: 28px; }
+.edit-box { min-width: min(520px, 80vw); }
+.chapters { position: sticky; top: 0; z-index: 2; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; max-width: 780px; margin: 0 auto; padding: 8px 24px; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(6px); color: var(--muted); }
+.chapter-mark { max-width: 780px; margin: 18px auto 0; padding: 0 24px; display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--accent2); }
+.jump { position: absolute; right: 50%; transform: translateX(50%); bottom: 150px; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line2); background: var(--card); color: var(--text); display: none; place-items: center; box-shadow: var(--shadow); z-index: 5; }
+.jump.show { display: grid; }
+.changes { border: 1px solid var(--line); border-radius: 10px; margin-top: 10px; font-size: 13px; background: var(--card); }
+.changes summary { cursor: pointer; padding: 7px 10px; display: flex; align-items: center; gap: 6px; list-style: none; }
+.ch-row { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-top: 1px solid var(--line); }
+.add { color: #3fb950; font-family: var(--mono); font-size: 12px; }
+.rem { color: #f85149; font-family: var(--mono); font-size: 12px; }
+.queued { display: flex; align-items: center; gap: 8px; background: var(--soft); border-radius: 10px; padding: 6px 8px 6px 10px; margin-bottom: 6px; font-size: 13px; }
+.queued .qt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.chip.ctx { font-size: 11.5px; padding: 2px 8px; cursor: pointer; }
+.composer.drop { border-color: var(--accent2); background: var(--accent-soft); }
+.att-chip { gap: 6px; }
+.thumb { width: 28px; height: 28px; object-fit: cover; border-radius: 6px; cursor: zoom-in; }
+.msg-user .att .thumb { width: 120px; height: 90px; }
+.lightbox { cursor: zoom-out; }
+.lightbox img { max-width: 92vw; max-height: 90vh; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+.plan-step .dot { margin-right: 4px; }
+.side-chat { display: flex; flex-direction: column; height: calc(100vh - 110px); }
+.side-thread { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
+.side-u { align-self: flex-end; background: var(--soft); border-radius: 12px; padding: 7px 11px; max-width: 85%; font-size: 13.5px; white-space: pre-wrap; }
+.side-a { font-size: 13.5px; }
+.side-in textarea { width: 100%; }
+#panelTabs button { padding: 3px 8px; font-size: 12.5px; }
+.composer-bar { flex-wrap: wrap; row-gap: 4px; }
+.composer-bar .picker { white-space: nowrap; }
+#panelTabs { flex-wrap: wrap; }

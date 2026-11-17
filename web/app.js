@@ -149,7 +149,7 @@ const MODEL_SUGGESTIONS = ['anthropic:claude-opus-5-5', 'anthropic:claude-sonnet
 
 const S = {
   st: null, view: 'chat', projectId: store.get('projectId', null), chatId: null, chat: null,
-  streaming: false, abort: null, attachments: [], agent: 'auto', mode: store.get('mode', ''), effort: store.get('effort', 'auto'), panelTab: 'board', artifactId: null,
+  streaming: false, abort: null, attachments: [], queue: [], autoStick: true, planStatus: {}, agent: 'auto', mode: store.get('mode', ''), effort: store.get('effort', 'auto'), panelTab: 'board', artifactId: null,
   artifacts: [], lastPlan: null, code: [],
 };
 
@@ -363,7 +363,9 @@ function renderChat() {
     $('#prompt')?.focus();
     return;
   }
-  v.innerHTML = `<div class="thread" id="thread">${S.chat.messages.map(renderMessage).join('')}</div>`;
+  const chs = S.chat.chapters || [];
+  v.innerHTML = `${chs.length ? `<div class="chapters">${ico('book', 13)} ${chs.map(c => `<button class="chip" data-goch="${esc(c.messageId)}">${esc(c.title)}</button>`).join('')}</div>` : ''}<div class="thread" id="thread">${S.chat.messages.map(renderMessage).join('')}</div><button class="jump" id="jumpBtn" title="Ir al final">${ico('chevron', 16)}</button>`;
+  wireScroll(v);
   $('#composerWrap').appendChild(composer());
   drawLimitBanner();
   $('#composerWrap').insertAdjacentHTML('beforeend', '<div class="hint">El orquestador reparte la tarea entre agentes. Revisa los cambios antes de aplicarlos.</div>');
@@ -419,20 +421,45 @@ function renderStep(s, single, open = true) {
   const tools = (s.tools || []).map(t => `<div class="tool-row">${ico('wrench', 13)} <b>${esc(t.name)}</b> ${esc(t.input)}</div>`).join('');
   const arts = (s.artifacts || []).map(id => { const a = S.artifacts.find(x => x.id === id); return a ? artChip(a.id, a.title, a.versions, a.appliedVersion) : ''; }).join('');
   return `<div class="step ${single ? 'single' : ''} ${open ? '' : 'closed'}" data-step="${esc(s.id)}">
-    <div class="step-head">${agentBadge(s.agentId, s.model)}<span class="meta">${usageMeta(s.usage)}${single ? '' : '<span class="caret">' + ico('chevron', 14) + '</span>'}</span></div>
-    <div class="step-body">${!single && s.task ? `<div class="step-task">${esc(s.task.slice(0, 400))}</div>` : ''}<div class="tools">${tools}</div><div class="md ${s.error ? 'err' : ''}">${md(s.text)}</div>${arts ? `<div class="art-chips">${arts}</div>` : ''}</div></div>`;
+    <div class="step-head">${agentBadge(s.agentId, s.model)}<span class="meta">${s.effort ? `<span class="chip effchip">${esc(EFFORT_NAMES[s.effort] || s.effort)}</span>` : ''}${usageMeta(s.usage)}${single ? '' : '<span class="caret">' + ico('chevron', 14) + '</span>'}</span></div>
+    <div class="step-body">${!single && s.task ? `<div class="step-task">${esc(s.task.slice(0, 400))}</div>` : ''}<div class="tools">${tools}</div><div class="md ${s.error ? 'err' : ''}">${md(s.text)}</div><div class="changes-box">${changesHtml(s.changes)}</div>${arts ? `<div class="art-chips">${arts}</div>` : ''}</div></div>`;
+}
+
+const EFFORT_NAMES = { low: 'bajo', medium: 'medio', high: 'alto', xhigh: 'muy alto', max: 'máximo' };
+function changesHtml(ch) {
+  if (!ch || !ch.length) return '';
+  const a = ch.reduce((x, c) => x + (c.added || 0), 0), r = ch.reduce((x, c) => x + (c.removed || 0), 0);
+  return `<details class="changes" open><summary>${ico('file', 13)} ${ch.length} archivo${ch.length > 1 ? 's' : ''} ${ch.some(c => !c.applied) ? 'propuestos' : 'modificados'} <span class="add">+${a}</span> <span class="rem">−${r}</span></summary>${ch.map(c => `<div class="ch-row"><span class="mono">${esc(c.path)}</span>${c.applied ? '' : '<span class="chip" style="font-size:10.5px">propuesta</span>'}<span style="flex:1"></span><span class="add">+${c.added}</span><span class="rem">−${c.removed}</span></div>`).join('')}</details>`;
+}
+
+const IMG_RE = /\.(png|jpe?g|webp|gif)$/i;
+const fileName = p => String(p).split(/[\\/]/).pop();
+function attChip(f, removable, i) {
+  const img = IMG_RE.test(f) ? `<img class="thumb" src="/api/file?path=${encodeURIComponent(f)}" data-zoom="${esc(f)}" alt="">` : ico('file', 13);
+  return `<span class="chip att-chip" title="${esc(f)}">${img} ${esc(fileName(f))}${removable ? `<button data-rm-att="${i}">${ico('x', 12)}</button>` : ''}</span>`;
+}
+function msgActions(m) {
+  if (!m.id) return '';
+  const b = (act, icon, title) => `<button class="icon-btn" data-mact="${act}" data-mid="${esc(m.id)}" title="${title}">${ico(icon, 15)}</button>`;
+  return m.role === 'user'
+    ? `<div class="msg-actions">${b('copy', 'copy', 'Copiar')}${b('edit', 'pencil', 'Editar')}${b('rewind', 'refresh', 'Rebobinar hasta aquí')}${b('fork', 'layers', 'Bifurcar desde aquí')}</div>`
+    : `<div class="msg-actions">${b('copy', 'copy', 'Copiar')}${b('fork', 'layers', 'Bifurcar desde aquí')}${b('chapter', 'book', 'Fijar como capítulo')}${b('speak', 'music', 'Leer en voz alta')}</div>`;
+}
+function chapterMark(m) {
+  const ch = (S.chat?.chapters || []).find(c => c.messageId === m.id);
+  return ch ? `<div class="chapter-mark" id="ch-${esc(m.id)}">${ico('book', 13)} ${esc(ch.title)}</div>` : '';
 }
 
 function renderMessage(m) {
   if (m.role === 'user') {
-    const att = (m.attachments || []).map(f => `<span class="chip">${ico('file', 13)} ${esc(f)}</span>`).join('');
+    const att = (m.attachments || []).map(f => attChip(f)).join('');
     const md0 = m.mode && m.mode !== 'auto' ? MODES.find(x => x.id === m.mode) : null;
-    return `<div class="msg-user"><div>${md0 ? `<div class="att" style="margin:0 0 4px"><span class="chip">${ico(md0.icon, 12)} ${md0.label}</span></div>` : ''}<div class="bubble">${esc(m.content)}</div>${att ? `<div class="att">${att}</div>` : ''}</div></div>`;
+    return `${chapterMark(m)}<div class="msg-user" data-msg="${esc(m.id || '')}"><div>${md0 ? `<div class="att" style="margin:0 0 4px"><span class="chip">${ico(md0.icon, 12)} ${md0.label}</span></div>` : ''}<div class="bubble">${esc(m.content)}</div>${att ? `<div class="att">${att}</div>` : ''}${msgActions(m)}</div></div>`;
   }
   const steps = m.steps || [];
-  if (!steps.length) return `<div class="msg-ai"><div class="step single"><div class="step-head">${agentBadge('orquestador')}<span class="meta">${usageMeta(m.planUsage)}</span></div><div class="md">${md(m.content)}</div></div></div>`;
+  if (!steps.length) return `${chapterMark(m)}<div class="msg-ai" data-msg="${esc(m.id || '')}"><div class="step single"><div class="step-head">${agentBadge('orquestador')}<span class="meta">${usageMeta(m.planUsage)}</span></div><div class="md">${md(m.content)}</div></div>${msgActions(m)}</div>`;
   const plan = steps.length > 1 ? `<div class="plan-line">Plan: ${steps.map(s => `${agentIcon(agentById(s.agentId), 14)} ${esc(s.agentName)}`).join(' <span class="arrow">→</span> ')}${m.planUsage ? ` · <span title="Planificación">${usageMeta(m.planUsage)}</span>` : ''}</div>` : '';
-  return `<div class="msg-ai">${plan}${steps.map(s => renderStep(s, steps.length === 1, true)).join('')}</div>`;
+  return `${chapterMark(m)}<div class="msg-ai" data-msg="${esc(m.id || '')}">${plan}${steps.map(s => renderStep(s, steps.length === 1, true)).join('')}${msgActions(m)}</div>`;
 }
 
 function composer() {
@@ -448,7 +475,8 @@ function composer() {
       <button class="picker" id="effPick" title="Nivel de esfuerzo"></button>
       <span class="spacer"></span>
       ${S.st.config.routing.economy ? `<span class="chip eco" title="Modo ahorro: se prueban primero los modelos gratuitos">${ico('zap', 12)} ahorro</span>` : ''}
-      <button class="send ${S.streaming ? 'stop' : ''}" id="sendBtn" title="${S.streaming ? 'Dejar de mostrar' : 'Enviar'}">${S.streaming ? ico('stop', 14) : ico('arrowUp', 17, 2.2)}</button>
+      <button class="chip ctx" id="ctxChip" title="Contexto de esta conversación"></button>
+      <button class="send ${S.streaming ? 'stop' : ''}" id="sendBtn" title="${S.streaming ? 'Detener (si escribes algo, queda en cola)' : 'Enviar'}">${S.streaming ? ico('stop', 14) : ico('arrowUp', 17, 2.2)}</button>
     </div>`;
   const ta = $('#prompt', wrap), pick = $('#agentPick', wrap), sendBtn = $('#sendBtn', wrap);
   const drawPick = () => {
@@ -470,11 +498,18 @@ function composer() {
     '-',
     ...ags.map(a => ({ label: `${agentIcon(a, 16)}<div><div>${esc(a.name)}</div><div class="sub">${esc(a.model)}</div></div>`, run: () => { S.agent = a.id; drawPick(); } })),
   ]);
-  ta.addEventListener('input', () => { autosize(ta); sendBtn.disabled = !S.streaming && !ta.value.trim(); });
+  ta.value = loadDraft().text || ''; setTimeout(() => autosize(ta), 0);
+  ta.addEventListener('input', () => { autosize(ta); sendBtn.disabled = !S.streaming && !ta.value.trim(); saveDraft(); });
+  ta.addEventListener('paste', e => { const files = [...(e.clipboardData?.files || [])]; if (files.length) { e.preventDefault(); files.forEach(uploadAndAttach); } });
+  wrap.addEventListener('dragover', e => { e.preventDefault(); wrap.classList.add('drop'); });
+  wrap.addEventListener('dragleave', () => wrap.classList.remove('drop'));
+  wrap.addEventListener('drop', e => { e.preventDefault(); wrap.classList.remove('drop'); [...(e.dataTransfer?.files || [])].forEach(uploadAndAttach); });
   setupSpell(ta, $('#taMirror', wrap));
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!S.streaming) send(); } });
   sendBtn.disabled = !S.streaming;
-  sendBtn.onclick = () => S.streaming ? stopStream() : send();
+  sendBtn.onclick = () => S.streaming && !ta.value.trim() ? stopStream() : send();
+  wrap.insertAdjacentHTML('afterbegin', '<div id="queueBox"></div>');
+  setTimeout(() => { renderQueue(); updateContext(); }, 0);
   $('#attachBtn', wrap).onclick = () => menu($('#attachBtn', wrap), [
     { label: ico('folder', 16) + '<div><div>Archivo del proyecto</div><div class="sub">Código, textos, modelos…</div></div>', run: attachDialog },
     { label: ico('file', 16) + '<div><div>Archivo del PC</div><div class="sub">PDF, Word, Excel, PowerPoint, vídeo, audio, imagen…</div></div>', run: async () => {
@@ -485,6 +520,58 @@ function composer() {
   renderAttachments(wrap);
   return wrap;
 }
+// ---------- Borradores, subidas, cola, contexto, scroll ----------
+const draftKey = () => 'draft:' + (S.chatId || 'new:' + (S.projectId || ''));
+function loadDraft() { try { const d = JSON.parse(store.get(draftKey(), '{}')); if (d.attachments && !S.attachments.length) S.attachments = d.attachments; return d; } catch { return {}; } }
+let draftTimer;
+function saveDraft() { clearTimeout(draftTimer); draftTimer = setTimeout(() => { const ta = $('#prompt'); store.set(draftKey(), JSON.stringify({ text: ta?.value || '', attachments: S.attachments })); }, 250); }
+function clearDraft() { clearTimeout(draftTimer); try { localStorage.removeItem(draftKey()); } catch {} }
+async function uploadAndAttach(file) {
+  if (S.attachments.length >= 20) return toast('Máximo 20 archivos por mensaje');
+  if (file.size > 30 * 1024 * 1024) return toast(`«${file.name}» supera 30 MB`);
+  const name = file.name || ('imagen-' + Date.now() + '.' + ((file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')));
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', headers: { 'X-File-Name': encodeURIComponent(name) }, body: file });
+    if (!r.ok) throw new Error(await r.text());
+    const j = await r.json(); S.attachments = [...S.attachments, j.path]; renderAttachments();
+  } catch (e) { toast('No se pudo adjuntar: ' + e.message.slice(0, 120)); }
+}
+function renderQueue() {
+  const box = $('#queueBox'); if (!box) return;
+  const q = S.queue.filter(x => x.chatId === S.chatId);
+  box.innerHTML = q.map((x, i) => `<div class="queued">${ico('clock', 13)}<span class="qt">${esc(x.text.slice(0, 140))}</span><button class="btn sm" data-qnow="${i}" title="Detiene lo que está haciendo y envía esto ya">Enviar ahora</button><button class="icon-btn" data-qdel="${i}" title="Quitar">${ico('x', 13)}</button></div>`).join('');
+  $$('[data-qdel]', box).forEach(b => b.onclick = () => { const it = q[+b.dataset.qdel]; S.queue.splice(S.queue.indexOf(it), 1); renderQueue(); });
+  $$('[data-qnow]', box).forEach(b => b.onclick = () => { const it = q[+b.dataset.qnow]; S.queue.splice(S.queue.indexOf(it), 1); S.queue.unshift(it); renderQueue(); stopStream(); toast('Deteniendo para enviar tu mensaje…'); });
+}
+async function updateContext() {
+  const chip = $('#ctxChip'); if (!chip) return;
+  if (!S.chat?.id) { chip.classList.add('hidden'); return; }
+  try {
+    const c = await api('GET', `/api/chats/${S.chat.id}/context`);
+    const p = Math.max(0.1, c.tokens / c.window * 100);
+    chip.classList.remove('hidden');
+    chip.innerHTML = `${ico('layers', 12)} ${p < 1 ? p.toFixed(1) : Math.round(p)} %`;
+    chip.title = `Contexto enviado: ~${fmtTok(c.tokens)} de ${fmtTok(c.window)} tokens · conversación completa: ${fmtTok(c.fullTokens)}${c.hasSummary ? ' · con resumen compactado' : ''}`;
+    chip.onclick = () => menu(chip, [
+      { label: `<div><div>~${fmtTok(c.tokens)} tokens de contexto</div><div class="sub">${c.messages} mensajes${c.hasSummary ? ` · ${c.summarized} resumidos` : ''}</div></div>`, run: () => {} },
+      '-',
+      { label: ico('layers', 15) + ' Compactar conversación ahora', run: async () => { toast('Compactando…'); await api('POST', `/api/chats/${S.chat.id}/compact`); updateContext(); toast('Conversación compactada'); } },
+    ]);
+    $$('.paused-banner').forEach(e => e.remove());
+    if (c.pending) {
+      $('#composerWrap')?.insertAdjacentHTML('afterbegin', `<div class="limit-banner paused-banner">${ico('clock', 15)}<b>En pausa por el límite de Claude</b><span class="muted">Continuará solo a las ${new Date(c.pending.resumeAt * 1000).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span><span style="flex:1"></span><button class="btn sm" id="cancelResume">Cancelar</button></div>`);
+      $('#cancelResume').onclick = async () => { await api('POST', `/api/chats/${S.chat.id}/resume`); updateContext(); };
+    }
+  } catch { chip.classList.add('hidden'); }
+}
+function wireScroll(v) {
+  const jump = $('#jumpBtn');
+  const at = () => v.scrollHeight - v.scrollTop - v.clientHeight < 60;
+  v.onscroll = () => { S.autoStick = at(); jump?.classList.toggle('show', !S.autoStick); };
+  v.onwheel = e => { if (e.deltaY < 0) { S.autoStick = false; jump?.classList.add('show'); } };
+  if (jump) jump.onclick = () => { S.autoStick = true; v.scrollTop = v.scrollHeight; jump.classList.remove('show'); };
+}
+
 function curMode() { return S.mode || S.st?.config?.defaults?.mode || 'auto'; }
 // ---------- Corrector (estilo Google Docs) ----------
 function setupSpell(ta, mirror) {
@@ -532,7 +619,8 @@ function setupSpell(ta, mirror) {
 function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 280) + 'px'; }
 function renderAttachments(root = document) {
   const el = $('#attList', root); if (!el) return;
-  el.innerHTML = S.attachments.map((f, i) => `<span class="chip">${ico('file', 13)} ${esc(f)}<button data-rm-att="${i}">${ico('x', 14)}</button></span>`).join('');
+  el.innerHTML = S.attachments.map((f, i) => attChip(f, true, i)).join('');
+  saveDraft();
   $$('[data-rm-att]', el).forEach(b => b.onclick = () => { S.attachments.splice(+b.dataset.rmAtt, 1); renderAttachments(); });
 }
 
@@ -554,26 +642,33 @@ $('#chatTitle').addEventListener('change', async e => {
   renderSidebar();
 });
 
-function stopStream() { S.abort?.abort(); }
+function stopStream() { if (S.chat?.id) api('POST', `/api/chats/${S.chat.id}/stop`).catch(() => {}); }
 
-async function send() {
-  const ta = $('#prompt'); const text = ta.value.trim();
-  if (!text || S.streaming) return;
+async function send(override, overrideAtt) {
+  const ta = $('#prompt'); const text = (override ?? ta?.value ?? '').trim();
+  if (!text) return;
+  if (S.streaming) {
+    // Como en Claude: lo que escribes mientras trabaja queda en cola y se envía al terminar
+    S.queue.push({ text, attachments: [...S.attachments], chatId: S.chatId });
+    if (ta) ta.value = ''; S.attachments = []; renderAttachments(); clearDraft(); renderQueue();
+    return;
+  }
   if (!S.chat) {
     S.chat = await api('POST', '/api/chats', { projectId: S.projectId });
     S.chatId = S.chat.id;
   }
-  const attachments = [...S.attachments];
+  const attachments = overrideAtt ?? [...S.attachments];
   S.chat.messages.push({ role: 'user', content: text, attachments, mode: curMode() });
   S.attachments = [];
-  S.streaming = true;
+  clearDraft();
+  S.streaming = true; S.autoStick = true; S.planStatus = {};
   render();
   const thread = $('#thread');
   const live = document.createElement('div'); live.className = 'msg-ai';
   live.innerHTML = `<div class="status-line" id="liveStatus"><svg class="spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg><span>Pensando…</span></div>`;
   thread.appendChild(live);
   const view = $('#view');
-  const stick = () => { if (view.scrollHeight - view.scrollTop - view.clientHeight < 260) view.scrollTop = view.scrollHeight; };
+  const stick = () => { if (S.autoStick) view.scrollTop = view.scrollHeight; };
   stick();
 
   const steps = {}; // stepId -> {el, text, dirty}
@@ -612,10 +707,20 @@ async function send() {
     } catch {}
     if (S.view === 'chat') render();
     if (document.body.classList.contains('panel-open')) renderPanel();
+    // Siguiente mensaje en cola
+    const qi = S.queue.findIndex(q => q.chatId === S.chatId);
+    if (qi >= 0) { const q = S.queue.splice(qi, 1)[0]; renderQueue(); setTimeout(() => send(q.text, q.attachments), 150); }
   }
 
   function handle(ev, d) {
     if (ev === 'status') status(d.text);
+    else if (ev === 'file_change') {
+      const s = steps[d.stepId]; if (!s) return;
+      s.changes = s.changes || []; const c = s.changes.find(x => x.path === d.path);
+      if (c) { c.added += d.added; c.removed += d.removed; c.applied = c.applied || d.applied; } else s.changes.push({ path: d.path, added: d.added, removed: d.removed, applied: d.applied });
+      const box = $('.changes-box', s.el); if (box) box.innerHTML = changesHtml(s.changes);
+    } else if (ev === 'stopped') { status('Detenido.'); }
+    else if (ev === 'paused') { live.insertAdjacentHTML('beforeend', `<div class="limit-banner">${ico('clock', 15)}<b>Límite de Claude agotado</b><span class="muted">Continuará solo a las ${new Date(d.resumeAt * 1000).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span></div>`); }
     else if (ev === 'plan') {
       S.lastPlan = { steps: d.steps, ctx: {} };
       if (d.reply) { $('#liveStatus', live)?.remove(); live.insertAdjacentHTML('beforeend', `<div class="step single"><div class="step-head">${agentBadge('orquestador')}</div><div class="md">${md(d.reply)}</div></div>`); return; }
@@ -623,7 +728,7 @@ async function send() {
       if (!single) live.insertAdjacentHTML('afterbegin', `<div class="plan-line">Plan: ${d.steps.map(s => `${agentIcon(agentById(s.agent), 14)} ${esc(s.agentName || s.agent)}`).join(' <span class="arrow">→</span> ')}</div>`);
       status(single ? 'Trabajando…' : `Ejecutando ${d.steps.length} pasos…`);
     } else if (ev === 'step_start') {
-      S.lastPlan && (S.lastPlan.ctx[d.stepId] = d);
+      S.lastPlan && (S.lastPlan.ctx[d.stepId] = d); S.planStatus[d.stepId] = 'run';
       const html = renderStep({ id: d.stepId, agentId: d.agent, model: d.model, task: d.task, text: '' }, single, true);
       $('#liveStatus', live)?.insertAdjacentHTML('beforebegin', html);
       const el = $(`[data-step="${CSS.escape(d.stepId)}"]`, live);
@@ -639,7 +744,7 @@ async function send() {
       box.insertAdjacentHTML('beforeend', artChip(d.id, d.title, d.version, d.applied));
     } else if (ev === 'step_done') {
       const s = steps[d.stepId]; if (!s) return;
-      const meta = $('.meta', s.el); $('.dot', meta)?.remove();
+      const meta = $('.meta', s.el); $('.dot', meta)?.remove(); S.planStatus[d.stepId] = 'done';
       const mc = $('.model', s.el); if (mc && d.model) mc.textContent = d.model;
       if (d.fallbacks?.length) $('.tools', s.el).insertAdjacentHTML('afterbegin', `<div class="tool-row" title="${esc(d.fallbacks.join('\n'))}">${ico('refresh', 13)} <b>respaldo</b> ${d.fallbacks.length} modelo(s) fallaron; se usó ${esc(d.model)}</div>`);
       meta.insertAdjacentHTML('afterbegin', usageMeta(d.usage));
@@ -677,11 +782,55 @@ document.addEventListener('click', async e => {
     }
     return;
   }
+  const ma = e.target.closest('[data-mact]');
+  if (ma) { msgAction(ma.dataset.mact, ma.dataset.mid, ma); return; }
+  const gch = e.target.closest('[data-goch]');
+  if (gch) { document.getElementById('ch-' + gch.dataset.goch)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+  const zm = e.target.closest('[data-zoom]');
+  if (zm) { const o = document.createElement('div'); o.className = 'overlay lightbox'; o.innerHTML = `<img src="/api/file?path=${encodeURIComponent(zm.dataset.zoom)}" alt="">`; o.onclick = () => o.remove(); document.body.appendChild(o); return; }
   const ap = e.target.closest('[data-allow]');
   if (ap) { const card = ap.closest('[data-ap]'); $$('button', card).forEach(x => x.disabled = true); api('POST', `/api/approvals/${encodeURIComponent(card.dataset.ap)}`, { allow: ap.dataset.allow === '1' }).catch(err => toast(err.message)); return; }
   const art = e.target.closest('[data-art]');
   if (art) openArtifact(art.dataset.art);
 });
+
+// ---------- Acciones de mensajes (como en Claude) ----------
+function msgText(m) { return m.role === 'user' ? m.content : (m.steps?.length ? m.steps.map(s => s.text).join('\n\n') : m.content); }
+async function msgAction(act, mid, btn) {
+  const m = S.chat?.messages.find(x => x.id === mid); if (!m) return;
+  if (act === 'copy') { await navigator.clipboard.writeText(msgText(m)); toast('Copiado'); }
+  if (act === 'fork') { const n = await api('POST', `/api/chats/${S.chat.id}/fork`, { messageId: mid }); await loadState(); openChat(n.id); toast('Conversación bifurcada'); }
+  if (act === 'rewind') {
+    if (!(await ask('¿Rebobinar hasta aquí? Se borran este mensaje y todo lo posterior; su texto vuelve al cuadro de escritura.', { ok: 'Rebobinar', danger: true }))) return;
+    const r = await api('POST', `/api/chats/${S.chat.id}/rewind`, { messageId: mid });
+    S.chat = await api('GET', '/api/chats/' + S.chat.id); S.attachments = r.attachments || [];
+    store.set(draftKey(), JSON.stringify({ text: r.text, attachments: S.attachments })); render();
+  }
+  if (act === 'edit') {
+    const el = btn.closest('.msg-user'); const bubble = $('.bubble', el);
+    bubble.outerHTML = `<div class="edit-box"><textarea class="in" rows="3">${esc(m.content)}</textarea><div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn sm" data-ecancel>Cancelar</button><button class="btn sm primary" data-esave>Enviar</button></div></div>`;
+    const box = $('.edit-box', el); const ta = $('textarea', box); ta.focus(); ta.selectionStart = ta.value.length;
+    $('[data-ecancel]', box).onclick = () => render();
+    $('[data-esave]', box).onclick = async () => {
+      const t = ta.value.trim(); if (!t) return;
+      await api('POST', `/api/chats/${S.chat.id}/rewind`, { messageId: mid });
+      S.chat = await api('GET', '/api/chats/' + S.chat.id);
+      send(t, m.attachments || []);
+    };
+  }
+  if (act === 'chapter') {
+    const t = await askText('Título del capítulo:', (msgText(m).replace(/[#*_>`]/g, '').trim().split('\n')[0] || 'Capítulo').slice(0, 50));
+    if (!t) return;
+    const chapters = [...(S.chat.chapters || []).filter(c => c.messageId !== mid), { messageId: mid, title: t.trim() }];
+    await api('PATCH', '/api/chats/' + S.chat.id, { chapters }); S.chat.chapters = chapters; render(); toast('Capítulo fijado');
+  }
+  if (act === 'speak') {
+    if (speechSynthesis.speaking) { speechSynthesis.cancel(); return; }
+    const u = new SpeechSynthesisUtterance(msgText(m).replace(/```[\s\S]*?```/g, ' (código omitido) ').replace(/[#*_>`|]/g, ''));
+    const v = speechSynthesis.getVoices().find(v => v.lang.startsWith('es')); if (v) { u.voice = v; u.lang = v.lang; }
+    speechSynthesis.speak(u); toast('Leyendo en voz alta (pulsa otra vez para parar)');
+  }
+}
 
 // ---------- Panel derecho ----------
 $('#panelBtn').onclick = () => { document.body.classList.toggle('panel-open'); if (document.body.classList.contains('panel-open')) renderPanel(); };
@@ -694,6 +843,9 @@ function openPreview(text, lang) { S.preview = { text, lang }; S.artifactId = nu
 async function renderPanel() {
   $$('#panelTabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.panelTab));
   const body = $('#panelBody');
+  if (S.panelTab === 'plan') return renderPlanTab(body);
+  if (S.panelTab === 'tasks') return renderTasksTab(body);
+  if (S.panelTab === 'side') return renderSideTab(body);
   if (S.panelTab === 'board') {
     const p = project();
     if (!p) { body.innerHTML = '<div class="muted">Elige un proyecto.</div>'; return; }
@@ -746,6 +898,57 @@ async function renderPanel() {
     await api('POST', `/api/artifacts/${a.id}/apply`, { version: vIdx, path });
     toast('Aplicado: ' + path); await refreshArtifacts(); renderPanel();
   });
+}
+
+function openPanelTab(t) { S.panelTab = t; document.body.classList.add('panel-open'); renderPanel(); }
+
+function renderPlanTab(body) {
+  const p = S.lastPlan;
+  if (!p || !p.steps?.length) { body.innerHTML = '<h3>Plan</h3><div class="muted" style="font-size:13px">Cuando el orquestador reparta una tarea, aquí verás cada paso y su estado.</div>'; return; }
+  body.innerHTML = '<h3>Plan del último envío</h3>' + p.steps.map(s => { const st = S.planStatus[s.id]; const c = p.ctx[s.id]; return `<div class="ev plan-step"><span class="dot ${st === 'run' ? 'run' : st === 'done' ? 'on' : ''}"></span><b>${agentIcon(agentById(s.agent), 14)} ${esc(s.agentName || s.agent)}</b>${c?.effort ? ` <span class="chip effchip">${esc(EFFORT_NAMES[c.effort] || c.effort)}</span>` : ''}<div class="muted" style="font-size:12.5px;margin-top:4px">${esc((s.task || '').slice(0, 220))}</div>${s.dependsOn?.length ? `<div class="muted" style="font-size:11.5px">Espera a: ${s.dependsOn.map(esc).join(', ')}</div>` : ''}</div>`; }).join('');
+}
+
+async function renderTasksTab(body) {
+  const r = await api('GET', '/api/runs').catch(() => ({ running: [], paused: [], routines: [] }));
+  body.innerHTML = `<h3>En curso</h3>${r.running.length ? r.running.map(x => `<div class="ev"><span class="dot run"></span> <b>${esc(x.title)}</b> <span class="when">${ago(x.startedAt)}</span><div class="row" style="margin-top:6px"><button class="btn sm" data-open="${x.chatId}">Abrir</button><button class="btn sm danger" data-stop="${x.chatId}">Detener</button></div></div>`).join('') : '<div class="muted" style="font-size:13px">Nada trabajando ahora.</div>'}
+    <h3>En pausa por límite</h3>${r.paused.length ? r.paused.map(x => `<div class="ev">${ico('clock', 13)} <b>${esc(x.title)}</b><div class="muted" style="font-size:12.5px">Continúa a las ${new Date(x.resumeAt * 1000).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</div><div class="row" style="margin-top:6px"><button class="btn sm" data-open="${x.chatId}">Abrir</button><button class="btn sm" data-unpause="${x.chatId}">Cancelar</button></div></div>`).join('') : '<div class="muted" style="font-size:13px">Ninguna.</div>'}
+    <h3>Rutinas activas</h3>${r.routines.length ? r.routines.map(x => `<div class="ev">${ico('clock', 13)} <b>${esc(x.name)}</b> <span class="muted" style="font-size:12px">${esc(x.schedule)}</span></div>`).join('') : '<div class="muted" style="font-size:13px">Ninguna.</div>'}`;
+  $$('[data-open]', body).forEach(b => b.onclick = () => openChat(b.dataset.open));
+  $$('[data-stop]', body).forEach(b => b.onclick = async () => { await api('POST', `/api/chats/${b.dataset.stop}/stop`); setTimeout(() => renderTasksTab(body), 800); });
+  $$('[data-unpause]', body).forEach(b => b.onclick = async () => { await api('POST', `/api/chats/${b.dataset.unpause}/resume`); renderTasksTab(body); });
+  clearTimeout(S.tasksTimer); S.tasksTimer = setTimeout(() => { if (S.panelTab === 'tasks' && document.body.classList.contains('panel-open')) renderTasksTab(body); }, 5000);
+}
+
+async function renderSideTab(body) {
+  if (!S.side || S.side.projectId !== S.projectId) S.side = await api('POST', '/api/side-chat', { projectId: S.projectId });
+  else S.side = await api('GET', '/api/chats/' + S.side.id);
+  const msgs = S.side.messages || [];
+  body.innerHTML = `<div class="side-chat"><div class="muted" style="font-size:12.5px;margin-bottom:8px">Preguntas rápidas que no se mezclan con el chat principal. <button class="btn sm" id="sideClear" style="float:right">Vaciar</button></div>
+    <div class="side-thread" id="sideThread">${msgs.map(m => m.role === 'user' ? `<div class="side-u">${esc(m.content)}</div>` : `<div class="side-a md">${md(msgText(m))}</div>`).join('') || '<div class="muted" style="font-size:13px">Sin mensajes.</div>'}</div>
+    <div class="side-in"><textarea class="in" id="sideIn" rows="2" placeholder="Pregunta rápida… (Enter para enviar)"></textarea></div></div>`;
+  const th = $('#sideThread'); th.scrollTop = th.scrollHeight;
+  $('#sideClear').onclick = async () => { await api('DELETE', '/api/chats/' + S.side.id); S.side = null; renderSideTab(body); };
+  const inp = $('#sideIn'); inp.focus();
+  inp.addEventListener('keydown', async e => {
+    if (e.key !== 'Enter' || e.shiftKey) return; e.preventDefault();
+    const text = inp.value.trim(); if (!text) return; inp.value = ''; inp.disabled = true;
+    th.insertAdjacentHTML('beforeend', `<div class="side-u">${esc(text)}</div><div class="side-a md" id="sideLive">…</div>`); th.scrollTop = th.scrollHeight;
+    const res = await fetch(`/api/chats/${S.side.id}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, agentId: 'auto', mode: 'plan', effort: 'auto' }) });
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '', acc = '';
+    for (;;) { const { value, done } = await reader.read(); if (done) break; buf += dec.decode(value, { stream: true }); let i; while ((i = buf.indexOf('\n\n')) >= 0) { const raw = buf.slice(0, i); buf = buf.slice(i + 2); const ev = (raw.match(/^event: (.+)$/m) || [])[1]; const d = (raw.match(/^data: (.+)$/m) || [])[1]; if (!d) continue; const j = JSON.parse(d); if (ev === 'delta') acc += j.text; if (ev === 'plan' && j.reply) acc = j.reply; const live = $('#sideLive'); if (live) live.innerHTML = md(acc || '…'); th.scrollTop = th.scrollHeight; } }
+    inp.disabled = false; renderSideTab(body);
+  });
+}
+
+async function moreMenu(anchor) {
+  const ka = await api('GET', '/api/keep-awake').catch(() => ({ on: false }));
+  menu(anchor, [
+    { label: ico('chat', 15) + '<div><div>Chat lateral</div><div class="sub">Ctrl+;</div></div>', run: () => openPanelTab('side') },
+    { label: ico('clock', 15) + ' Tareas en segundo plano', run: () => openPanelTab('tasks') },
+    { label: ico('book', 15) + ' Plan', run: () => openPanelTab('plan') },
+    '-',
+    { label: ico('zap', 15) + `<div><div>Mantener la computadora activa ${ka.on ? ico('tick', 13) : ''}</div><div class="sub">Solo mientras faisp esté abierto</div></div>`, run: async () => { const r = await api('POST', '/api/keep-awake', { on: !ka.on }); toast(r.on ? 'El PC no se suspenderá mientras faisp esté abierto' : 'El PC puede suspenderse con normalidad'); } },
+  ]);
 }
 
 // ---------- Vistas ----------
@@ -932,6 +1135,7 @@ const SHORTCUTS = [
   { id: 'palette', label: 'Buscar chats y acciones', def: 'Ctrl+K', run: () => openPalette() },
   { id: 'newChat', label: 'Nuevo chat', def: 'Ctrl+Shift+O', run: () => $('#newChat').click() },
   { id: 'sidebar', label: 'Mostrar u ocultar la barra lateral', def: 'Ctrl+B', run: () => window.toggleSide?.() },
+  { id: 'sideChat', label: 'Chat lateral', def: 'Ctrl+;', run: () => openPanelTab('side') },
   { id: 'panel', label: 'Mostrar u ocultar la pizarra', def: 'Ctrl+.', run: () => $('#panelBtn').click() },
   { id: 'focus', label: 'Escribir en el chat', def: 'Shift+Esc', run: () => { if (S.view !== 'chat') { S.view = 'chat'; renderSidebar(); render(); } setTimeout(() => $('#prompt')?.focus(), 0); } },
   { id: 'cycleMode', label: 'Cambiar modo de permisos (en el chat)', def: 'Shift+Tab', input: true, run: () => cycleMode() },
@@ -1500,7 +1704,10 @@ addEventListener('focus', () => {
 });
 
 (async function init() {
+  $('#panelTabs').innerHTML = [['board', 'Pizarra'], ['plan', 'Plan'], ['tasks', 'Tareas'], ['side', 'Lateral'], ['artifact', 'Artefacto']].map(([t, l]) => `<button data-tab="${t}" class="${t === S.panelTab ? 'on' : ''}">${l}</button>`).join('');
+  $$('#panelTabs button').forEach(b => b.onclick = () => { S.panelTab = b.dataset.tab; renderPanel(); });
   $$('[data-i]').forEach(e => e.insertAdjacentHTML('afterbegin', ico(e.dataset.i, +e.dataset.s || 17)));
+  $('#moreBtn').onclick = e => moreMenu(e.currentTarget);
   $$('#sidebar .nav-item').forEach(b => { const l = $('.label', b); if (l && !b.title) b.title = l.textContent; });
   const toggleSide = window.toggleSide = () => { document.body.classList.toggle('collapsed'); store.set('collapsed', document.body.classList.contains('collapsed') ? '1' : '0'); syncOpenSide(); $('#toggleSide').title = document.body.classList.contains('collapsed') ? 'Abrir barra lateral (Ctrl+B)' : 'Contraer barra lateral (Ctrl+B)'; };
   $('#toggleSide').onclick = toggleSide;

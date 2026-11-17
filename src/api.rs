@@ -139,7 +139,7 @@ async fn state(State(st): St) -> Json<Value> {
     let chats: Vec<Value> = {
         let mut c: Vec<&Chat> = db.chats.iter().collect();
         c.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        c.iter().map(|c| json!({"id": c.id, "title": c.title, "projectId": c.project_id, "updatedAt": c.updated_at, "routineId": c.routine_id, "count": c.messages.len()})).collect()
+        c.iter().filter(|c| !c.side).map(|c| json!({"id": c.id, "title": c.title, "projectId": c.project_id, "updatedAt": c.updated_at, "routineId": c.routine_id, "count": c.messages.len(), "pending": c.pending.as_ref().map(|p| p.resume_at)})).collect()
     };
     let ext = st.ext.read().unwrap();
     let mut routines = db.routines.clone();
@@ -335,6 +335,9 @@ async fn patch_chat(State(st): St, Path(id): Path<String>, Json(v): Json<Value>)
     }
     if v.get("projectId").is_some() {
         c.project_id = v["projectId"].as_str().map(String::from);
+    }
+    if let Some(ch) = v.get("chapters") {
+        if let Ok(list) = serde_json::from_value::<Vec<Chapter>>(ch.clone()) { c.chapters = list; }
     }
     st.mark();
     Ok(Json(json!({"ok": true})))
@@ -744,6 +747,17 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/grammar", post(grammar))
         .route("/api/obsidian/vaults", get(obsidian_vaults))
         .route("/mcp/{token}", post(mcp_bridge))
+        .route("/api/chats/{id}/stop", post(chat_stop))
+        .route("/api/chats/{id}/fork", post(chat_fork))
+        .route("/api/chats/{id}/rewind", post(chat_rewind))
+        .route("/api/chats/{id}/compact", post(chat_compact))
+        .route("/api/chats/{id}/context", get(chat_context))
+        .route("/api/chats/{id}/resume", post(chat_resume_cancel))
+        .route("/api/side-chat", post(side_chat))
+        .route("/api/runs", get(runs))
+        .route("/api/upload", post(upload))
+        .route("/api/file", get(serve_file))
+        .route("/api/keep-awake", get(keep_awake_get).post(keep_awake_set))
         .route("/api/providers/{id}/key", get(provider_key))
         .route("/api/claude/limits/refresh", post(claude_limits_refresh))
         .route("/api/cli/codex/login", post(codex_login))
@@ -1123,4 +1137,178 @@ async fn mcp_bridge(State(st): St, Path(token): Path<String>, Json(msg): Json<Va
         _ => return Json(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Método no soportado"}})).into_response(),
     };
     Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
+}
+
+// ---------------- Chats: detener, bifurcar, rebobinar, compactar ----------------
+
+async fn chat_stop(State(st): St, Path(id): Path<String>) -> ApiResult {
+    let n = st.cancels.lock().unwrap().get(&id).cloned();
+    match n {
+        Some(n) => { n.notify_one(); Ok(Json(json!({"ok": true}))) }
+        None => Ok(Json(json!({"ok": false, "info": "no había nada en curso"}))),
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct MsgRef {
+    message_id: String,
+}
+async fn chat_fork(State(st): St, Path(id): Path<String>, Json(b): Json<MsgRef>) -> ApiResult {
+    let mut db = st.db.lock().unwrap();
+    let c = db.chats.iter().find(|c| c.id == id).cloned().ok_or_else(|| bad("no existe"))?;
+    let pos = c.messages.iter().position(|m| m.id == b.message_id).ok_or_else(|| bad("mensaje no encontrado"))?;
+    let mut n = c.clone();
+    n.id = uid("c_");
+    n.title = format!("↳ {}", c.title);
+    n.messages.truncate(pos + 1);
+    n.pending = None;
+    n.chapters.retain(|ch| n.messages.iter().any(|m| m.id == ch.message_id));
+    n.summarized_upto = n.summarized_upto.min(n.messages.len());
+    n.created_at = now();
+    n.updated_at = now();
+    db.chats.push(n.clone());
+    st.mark();
+    Ok(Json(json!(n)))
+}
+async fn chat_rewind(State(st): St, Path(id): Path<String>, Json(b): Json<MsgRef>) -> ApiResult {
+    let mut db = st.db.lock().unwrap();
+    let c = db.chats.iter_mut().find(|c| c.id == id).ok_or_else(|| bad("no existe"))?;
+    let pos = c.messages.iter().position(|m| m.id == b.message_id).ok_or_else(|| bad("mensaje no encontrado"))?;
+    let removed = c.messages[pos].clone();
+    c.messages.truncate(pos);
+    let len = c.messages.len();
+    c.chapters.retain(|ch| c.messages.iter().any(|m| m.id == ch.message_id));
+    if c.summarized_upto > len { c.summarized_upto = len; c.summary.clear(); }
+    c.updated_at = now();
+    st.mark();
+    Ok(Json(json!({"text": removed.content, "attachments": removed.attachments})))
+}
+async fn chat_compact(State(st): St, Path(id): Path<String>) -> ApiResult {
+    crate::orchestrator::compact_chat(&st, &id, true).await;
+    chat_context(State(st), Path(id)).await
+}
+async fn chat_context(State(st): St, Path(id): Path<String>) -> ApiResult {
+    let db = st.db.lock().unwrap();
+    let c = db.chats.iter().find(|c| c.id == id).ok_or_else(|| bad("no existe"))?;
+    let turns = st.cfg.read().unwrap().budget.history_turns * 2;
+    let start = c.messages.len().saturating_sub(turns).max(c.summarized_upto.min(c.messages.len()));
+    let tokens: usize = estimate_tokens(&c.summary) + c.messages[start..].iter().map(|m| estimate_tokens(&m.content.chars().take(if m.role == "user" { 100000 } else { 1500 }).collect::<String>())).sum::<usize>();
+    let full: usize = c.messages.iter().map(|m| estimate_tokens(&m.content)).sum();
+    Ok(Json(json!({"tokens": tokens, "fullTokens": full, "window": 1_000_000, "messages": c.messages.len(), "summarized": c.summarized_upto, "hasSummary": !c.summary.is_empty(), "pending": c.pending})))
+}
+async fn chat_resume_cancel(State(st): St, Path(id): Path<String>) -> ApiResult {
+    let mut db = st.db.lock().unwrap();
+    if let Some(c) = db.chats.iter_mut().find(|c| c.id == id) { c.pending = None; }
+    st.mark();
+    Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct SideBody {
+    project_id: Option<String>,
+}
+/// Chat lateral del proyecto (uno por proyecto, fuera de recientes)
+async fn side_chat(State(st): St, Json(b): Json<SideBody>) -> ApiResult {
+    let mut db = st.db.lock().unwrap();
+    if let Some(c) = db.chats.iter().find(|c| c.side && c.project_id == b.project_id) {
+        return Ok(Json(json!(c)));
+    }
+    let c = Chat { id: uid("c_"), project_id: b.project_id, title: "Chat lateral".into(), side: true, created_at: now(), updated_at: now(), ..Default::default() };
+    db.chats.push(c.clone());
+    st.mark();
+    Ok(Json(json!(c)))
+}
+
+async fn runs(State(st): St) -> Json<Value> {
+    let r = st.running.lock().unwrap().iter().map(|(k, (t, s, p))| json!({"chatId": k, "title": t, "startedAt": s, "projectId": p})).collect::<Vec<_>>();
+    let db = st.db.lock().unwrap();
+    let pend = db.chats.iter().filter_map(|c| c.pending.as_ref().map(|p| json!({"chatId": c.id, "title": c.title, "resumeAt": p.resume_at}))).collect::<Vec<_>>();
+    let routines = db.routines.iter().filter(|r| r.enabled).map(|r| json!({"id": r.id, "name": r.name, "schedule": r.schedule, "lastRun": r.last_run})).collect::<Vec<_>>();
+    Json(json!({"running": r, "paused": pend, "routines": routines}))
+}
+
+// ---------------- Subir archivos (pegar / arrastrar) y servirlos ----------------
+
+async fn upload(State(st): St, headers: axum::http::HeaderMap, body: axum::body::Bytes) -> ApiResult {
+    if body.len() > 30 * 1024 * 1024 {
+        return Err(bad("El archivo supera 30 MB"));
+    }
+    let raw = headers.get("x-file-name").and_then(|v| v.to_str().ok()).unwrap_or("archivo.bin");
+    let name: String = percent_decode(raw).chars().map(|c| if c.is_alphanumeric() || ".-_ ".contains(c) { c } else { '_' }).collect();
+    let dir = st.data.join("uploads");
+    std::fs::create_dir_all(&dir).map_err(bad)?;
+    let path = dir.join(format!("{}_{}", uid(""), name.trim()));
+    std::fs::write(&path, &body).map_err(bad)?;
+    let p = path.to_string_lossy().to_string();
+    st.picked.lock().unwrap().insert(p.clone());
+    Ok(Json(json!({"path": p, "size": body.len()})))
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) { out.push(v); i += 3; continue; }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+#[derive(Deserialize)]
+struct FileQ {
+    path: String,
+}
+/// Sirve un archivo local para previsualizarlo (solo adjuntos elegidos/subidos o dentro de un proyecto).
+async fn serve_file(State(st): St, Query(q): Query<FileQ>) -> Response {
+    let p = std::path::PathBuf::from(&q.path);
+    let allowed = st.picked.lock().unwrap().contains(&q.path)
+        || p.starts_with(st.data.join("uploads"))
+        || st.db.lock().unwrap().projects.iter().any(|pr| !pr.path.is_empty() && p.starts_with(&pr.path));
+    if !allowed || !p.is_file() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let mime = crate::gemini_media::mime_for(&p).unwrap_or("application/octet-stream");
+    match std::fs::read(&p) {
+        Ok(b) => ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=3600")], b).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+// ---------------- Mantener la computadora activa ----------------
+
+async fn keep_awake_get(State(st): St) -> Json<Value> {
+    Json(json!({"on": st.keep_awake.lock().unwrap().is_some()}))
+}
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AwakeBody {
+    on: bool,
+}
+async fn keep_awake_set(State(st): St, Json(b): Json<AwakeBody>) -> Json<Value> {
+    let mut g = st.keep_awake.lock().unwrap();
+    if b.on && g.is_none() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        // El estado de ejecución es por hilo: un hilo dedicado lo mantiene mientras esté activo
+        std::thread::spawn(move || {
+            #[cfg(windows)]
+            unsafe {
+                use windows_sys::Win32::System::Power::*;
+                SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+                let _ = rx.recv();
+                SetThreadExecutionState(ES_CONTINUOUS);
+            }
+            #[cfg(not(windows))]
+            let _ = rx.recv();
+        });
+        *g = Some(tx);
+    } else if !b.on {
+        if let Some(tx) = g.take() { let _ = tx.send(()); }
+    }
+    Json(json!({"on": g.is_some()}))
 }

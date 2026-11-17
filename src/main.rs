@@ -129,7 +129,7 @@ async fn start_server(a: &Args, data: std::path::PathBuf) -> anyhow::Result<Opti
     let app = api::router(st.clone());
     let shutdown_st = st.clone();
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app)
+        let res = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 let _ = tokio::signal::ctrl_c().await;
                 shutdown_st.dirty.store(true, Ordering::Relaxed);
@@ -137,6 +137,9 @@ async fn start_server(a: &Args, data: std::path::PathBuf) -> anyhow::Result<Opti
                 std::process::exit(0);
             })
             .await;
+        if let Err(e) = res {
+            let _ = std::fs::write(store::data_dir().join("faisp.log"), format!("servidor detenido: {e}\n"));
+        }
     });
     Ok(Some((url, st)))
 }
@@ -148,6 +151,16 @@ fn main() -> anyhow::Result<()> {
         unsafe { std::env::set_var("FAISP_DATA", d) };
     }
     let data = store::data_dir();
+    // Registro de errores graves en <datos>/faisp.log (la versión release no tiene consola)
+    {
+        let log = data.join("faisp.log");
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = std::fs::create_dir_all(log.parent().unwrap());
+            let line = format!("[{}] PÁNICO: {info}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) { let _ = f.write_all(line.as_bytes()); }
+        }));
+    }
     let rt = tokio::runtime::Runtime::new()?;
     let Some((url, st)) = rt.block_on(start_server(&a, data.clone()))? else { return Ok(()) };
 

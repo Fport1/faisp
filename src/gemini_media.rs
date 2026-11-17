@@ -91,9 +91,26 @@ pub async fn analyze(http: &reqwest::Client, key: &str, model: &str, path: &Path
         (json!({"file_data": {"mime_type": mime, "file_uri": uri}}), Some(name))
     };
     let body = json!({"contents": [{"role": "user", "parts": [media_part, {"text": question}]}]});
-    let r = http.post(format!("{API}/v1beta/models/{model}:generateContent")).header("x-goog-api-key", key).timeout(Duration::from_secs(600)).json(&body).send().await?;
-    let status = r.status();
-    let v: Value = r.json().await.unwrap_or(Value::Null);
+    // Si Gemini está saturado (503) o limita (429), reintenta y prueba otros modelos
+    let models = [model, "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.5-flash-lite"];
+    let mut status = reqwest::StatusCode::SERVICE_UNAVAILABLE;
+    let mut v = Value::Null;
+    'outer: for m in models {
+        for wait in [0u64, 3, 8] {
+            if wait > 0 {
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+            }
+            let r = http.post(format!("{API}/v1beta/models/{m}:generateContent")).header("x-goog-api-key", key).timeout(Duration::from_secs(600)).json(&body).send().await?;
+            status = r.status();
+            v = r.json().await.unwrap_or(Value::Null);
+            if status.is_success() {
+                break 'outer;
+            }
+            if !(status.as_u16() == 503 || status.as_u16() == 429 || status.as_u16() == 500) {
+                break 'outer;
+            }
+        }
+    }
     if let Some(name) = uploaded {
         let _ = http.delete(format!("{API}/v1beta/{name}")).header("x-goog-api-key", key).send().await;
     }

@@ -15,6 +15,22 @@ use std::time::Duration;
 pub trait Sink: Send + Sync {
     fn text(&self, t: &str);
     fn tool(&self, name: &str, input: &Value);
+    /// Un archivo cambiado (líneas añadidas / eliminadas)
+    fn change(&self, _path: &str, _added: usize, _removed: usize, _applied: bool) {}
+}
+
+/// Líneas añadidas y eliminadas entre dos textos (como el resumen de cambios de Claude Code).
+pub fn diff_counts(old: &str, new: &str) -> (usize, usize) {
+    let d = similar::TextDiff::from_lines(old, new);
+    let (mut a, mut r) = (0, 0);
+    for c in d.iter_all_changes() {
+        match c.tag() {
+            similar::ChangeTag::Insert => a += 1,
+            similar::ChangeTag::Delete => r += 1,
+            _ => {}
+        }
+    }
+    (a, r)
 }
 
 /// Último estado de límites del plan de Claude (lo envía Claude Code en cada respuesta).
@@ -799,6 +815,17 @@ async fn claude_code(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink
                 for b in ev["message"]["content"].as_array().cloned().unwrap_or_default() {
                     if b["type"] == "tool_use" {
                         let name = b["name"].as_str().unwrap_or("").to_string();
+                        // Resumen de cambios: Edit / MultiEdit / Write de Claude Code
+                        let inp = &b["input"];
+                        if let Some(fp) = inp["file_path"].as_str() {
+                            let shown = cwd.as_ref().and_then(|c| std::path::Path::new(fp).strip_prefix(c).ok()).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_else(|| fp.to_string());
+                            match name.as_str() {
+                                "Edit" => { let (a, r) = diff_counts(inp["old_string"].as_str().unwrap_or(""), inp["new_string"].as_str().unwrap_or("")); sink.change(&shown, a, r, true); }
+                                "MultiEdit" => { let (mut a, mut r) = (0, 0); for e in inp["edits"].as_array().cloned().unwrap_or_default() { let (x, y) = diff_counts(e["old_string"].as_str().unwrap_or(""), e["new_string"].as_str().unwrap_or("")); a += x; r += y; } sink.change(&shown, a, r, true); }
+                                "Write" => { let old = std::fs::read_to_string(fp).unwrap_or_default(); let (a, r) = diff_counts(&old, inp["content"].as_str().unwrap_or("")); sink.change(&shown, a, r, true); }
+                                _ => {}
+                            }
+                        }
                         sink.tool(&name, &b["input"]);
                         result.tool_log.push(ToolCallLog { name, input: b["input"].to_string().chars().take(300).collect(), result: String::new() });
                     }
