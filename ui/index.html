@@ -54,6 +54,7 @@
       <button class="icon-btn" data-ptab="changes" title="Cambios" data-i="diff" data-s="17"></button>
       <button class="icon-btn" data-ptab="browser" title="Navegador" data-i="globe" data-s="17"></button>
       <button class="icon-btn" data-ptab="files" title="Archivos" data-i="folder" data-s="17"></button>
+      <button class="icon-btn" data-ptab="studio" title="Estudio 3D" data-i="cube" data-s="17"></button>
       <button class="icon-btn" id="moreBtn" title="Más opciones" data-i="dots" data-s="17"></button>
       <button class="chip" id="panelBtn" title="Pizarra compartida y artefactos"><span data-i="panel" data-s="14"></span> Pizarra</button>
     </div>
@@ -76,6 +77,8 @@
   <script src="/vendor/marked.js"></script>
   <script src="/vendor/purify.js"></script>
   <script src="/logos.js"></script>
+  <script type="importmap">{"imports":{"three":"/vendor/three/three.module.min.js"}}</script>
+  <script type="module" src="/studio.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

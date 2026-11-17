@@ -78,6 +78,17 @@ Las acciones que cambian algo siguen el modo de permisos.
 
 **ElevenLabs:** el agente "Audio y voz" lista tus voces y genera voz, efectos y música en `.mp3`. Si el Modpack Launcher está conectado, los convierte a `.ogg` para Minecraft.
 
+## Estudio 3D, bocetos y paneles
+
+- **Estudio** (icono del cubo, `/estudio`): visor 3D de modelos de Blockbench (`.bbmodel`, con UV de caja), JSON de bloque e
+  ítem de Minecraft (texturas y padres del proyecto; ítems planos extruidos como en el juego), glTF/GLB y OBJ. Clic en una
+  pieza para elegirla y pedir un cambio: se envía al Modelador 3D con el archivo, una captura de la vista y, si quieres,
+  un boceto dibujado encima. El modelo se recarga solo cuando el agente lo cambia.
+- **Boceto** (`+` → Dibujar un boceto, `/boceto`): pincel, colores, cajas y flechas; se adjunta como imagen. Los agentes
+  de Claude Code abren las imágenes adjuntas (bocetos y capturas) antes de trabajar.
+- **Paneles** como Claude Code: tareas en segundo plano, terminal del proyecto, cambios (diferencias con git), navegador y
+  archivos. `/` abre comandos y skills; `@` menciona agentes o archivos del proyecto.
+
 ## Web (Vercel)
 
 ```bash

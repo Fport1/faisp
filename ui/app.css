@@ -563,3 +563,31 @@ kbd { display: inline-block; min-width: 22px; text-align: center; font: 600 11.5
 body.panel-open #panel { min-width: 360px; }
 .topbar { min-width: 0; }
 .topbar .title { min-width: 60px; }
+
+/* ---------- Estudio 3D y boceto ---------- */
+.studio { display: flex; flex-direction: column; height: calc(100vh - 92px); margin: -14px; }
+.st-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.st-bar .icon-btn.on { background: var(--soft); color: var(--accent2); }
+.st-view { position: relative; flex: 1; min-height: 220px; background: radial-gradient(circle at 50% 40%, #34343a, #1d1d21); }
+:root[data-theme="light"] .st-view { background: radial-gradient(circle at 50% 40%, #f4f4f6, #d9d9de); }
+.st-view canvas { display: block; cursor: grab; }
+.st-msg { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; }
+.st-parts { max-height: 22vh; overflow-y: auto; border-top: 1px solid var(--line); padding: 4px 6px; font-size: 12.5px; }
+.st-parts:empty { display: none; }
+.st-part { display: flex; align-items: center; gap: 5px; padding: 2px 6px; border-radius: 6px; cursor: pointer; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-part:hover { background: var(--soft); } .st-part.on { background: var(--soft); color: var(--accent2); font-weight: 600; }
+.st-ai { border-top: 1px solid var(--line); padding: 8px 10px 10px; }
+.st-ai textarea { width: 100%; resize: vertical; }
+.st-sel { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+.st-sel .lnk { border: 0; background: none; color: #6cb6ff; cursor: pointer; font: inherit; padding: 0 0 0 4px; }
+.modal.sketch { width: min(1100px, 96vw); max-width: none; }
+.sk-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.sk-col { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line2); cursor: pointer; padding: 0; }
+.sk-col.on { outline: 2px solid var(--accent2); outline-offset: 2px; }
+#skPick { width: 28px; height: 24px; border: 0; background: none; padding: 0; cursor: pointer; }
+.sk-sep { width: 1px; height: 20px; background: var(--line2); margin: 0 4px; }
+.sk-wrap { padding: 12px 16px; display: grid; place-items: center; }
+.sk-wrap canvas { width: 100%; max-height: 62vh; aspect-ratio: 3 / 2; object-fit: contain; border-radius: 10px; border: 1px solid var(--line2); cursor: crosshair; touch-action: none; background: #fff; }
+#panelTabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+#panelTabs::-webkit-scrollbar { display: none; }
+#panelTabs button { white-space: nowrap; }

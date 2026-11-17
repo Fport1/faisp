@@ -535,6 +535,7 @@ function composer() {
   setTimeout(() => { renderQueue(); updateContext(); }, 0);
   $('#attachBtn', wrap).onclick = () => menu($('#attachBtn', wrap), [
     { label: ico('folder', 16) + '<div><div>Archivo del proyecto</div><div class="sub">Código, textos, modelos…</div></div>', run: attachDialog },
+    { label: ico('pencil', 16) + '<div><div>Dibujar un boceto</div><div class="sub">Haz un dibujo simple de tu idea</div></div>', run: () => openSketch() },
     { label: ico('file', 16) + '<div><div>Archivo del PC</div><div class="sub">PDF, Word, Excel, PowerPoint, vídeo, audio, imagen…</div></div>', run: async () => {
       const r = await api('POST', '/api/pick-file').catch(e => ({ error: e.message }));
       if (r.path) { S.attachments = [...new Set([...S.attachments, r.path])]; renderAttachments(); }
@@ -750,7 +751,7 @@ function runQueue(chatId) {
   setTimeout(() => send(q.text, q.attachments), 150);
 }
 
-async function send(override, overrideAtt) {
+async function send(override, overrideAtt, agentOverride) {
   const ta = $('#prompt'); const text = (override ?? ta?.value ?? '').trim();
   if (!text) return;
   const cmd = override == null && SLASH.find(c => text === '/' + c.c);
@@ -772,7 +773,7 @@ async function send(override, overrideAtt) {
   S.attachments = [];
   clearDraft();
   const id = S.chat.id;
-  const body = JSON.stringify({ text, agentId: S.agent, attachments, mode: curMode(), effort: S.effort === 'agent' ? '' : S.effort });
+  const body = JSON.stringify({ text, agentId: agentOverride || S.agent, attachments, mode: curMode(), effort: S.effort === 'agent' ? '' : S.effort });
   streamChat(id, signal => fetch(`/api/chats/${id}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal }));
 }
 
@@ -871,6 +872,7 @@ async function streamChat(chatId, open, startedAt) {
       const c = s.changes.find(x => x.path === d.path);
       if (c) { c.added += d.added; c.removed += d.removed; c.applied = c.applied || d.applied; } else s.changes.push({ path: d.path, added: d.added, removed: d.removed, applied: d.applied });
       s.segs.filter(g => g.kind === 'tools').forEach(g => drawAct(s, g));
+      studioMaybeReload(d.path);
     } else if (ev === 'stopped') setVerb('Deteniendo', 'status');
     else if (ev === 'paused') { live.insertAdjacentHTML('beforeend', `<div class="limit-note">${ico('clock', 13)}<span>Límite de Claude agotado · seguirá solo a las ${new Date(d.resumeAt * 1000).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span></div>`); }
     else if (ev === 'plan') {
@@ -1038,6 +1040,7 @@ function changesCard(steps) {
   return `<div class="changes-card"><div class="cc-head">${list.length === 1 ? 'Se modificó 1 archivo' : `Se modificaron ${list.length} archivos`}</div>${list.slice(0, 3).map(changeRow).join('')}${list.length > 3 ? `<div class="cc-more">${list.slice(3).map(changeRow).join('')}</div>` : ''}<button class="cc-all"><span>${list.length > 3 ? 'Ver todo' : 'Ver diferencias'}</span><span style="flex:1"></span><span class="add">+${A}</span> <span class="rem">−${R}</span></button></div>`;
 }
 function openFileRef(path, kind) {
+  if (isModelFile(path)) { openStudio(path); return; }
   if (kind === 'read') { S.fileView = relPath(path); openPanelTab('files'); return; }
   S.diffPath = relPath(path); openPanelTab('changes');
 }
@@ -1047,7 +1050,7 @@ function togglePanelTab(t) {
   if (document.body.classList.contains('panel-open') && S.panelTab === t) { document.body.classList.remove('panel-open'); markPanelBtns(); return; }
   openPanelTab(t);
 }
-function markPanelBtns() { const open = document.body.classList.contains('panel-open'); $$('[data-ptab]').forEach(b => b.classList.toggle('on', open && b.dataset.ptab === S.panelTab)); }
+function markPanelBtns() { const open = document.body.classList.contains('panel-open'); if ((!open || S.panelTab !== 'studio') && S.studio) { S.studio.dispose(); S.studio = null; } $$('[data-ptab]').forEach(b => b.classList.toggle('on', open && b.dataset.ptab === S.panelTab)); }
 const shortCwd = p => { const a = String(p || '').replace(/\\/g, '/').split('/').filter(Boolean); return a.length > 2 ? '…/' + a.slice(-2).join('/') : a.join('/') || '~'; };
 
 function renderTermTab(body) {
@@ -1147,7 +1150,7 @@ async function renderFilesTab(body) {
     el.innerHTML = q ? files.filter(f => f.toLowerCase().includes(q)).slice(0, 300).map(f => `<div class="ffile" data-fv="${esc(f)}">${ico('file', 13)} ${esc(fileName(f))} <span class="cc-dir">${esc(f.split('/').slice(0, -1).join('/'))}</span></div>`).join('') || '<div class="muted" style="font-size:13px">Sin coincidencias</div>'
       : node(tree, '', 0) || '<div class="muted" style="font-size:13px">Carpeta vacía</div>';
     $$('.fdir', el).forEach(d => d.onclick = () => { const k = d.dataset.dir; S.openDirs.has(k) ? S.openDirs.delete(k) : S.openDirs.add(k); draw(); });
-    $$('.ffile', el).forEach(f => f.onclick = () => { S.fileView = f.dataset.fv; renderFilesTab(body); });
+    $$('.ffile', el).forEach(f => f.onclick = () => { if (isModelFile(f.dataset.fv)) return openStudio(f.dataset.fv); S.fileView = f.dataset.fv; renderFilesTab(body); });
   };
   draw();
   const fi = $('#fFilter'); fi.oninput = () => { S.fileFilter = fi.value; draw(); };
@@ -1168,6 +1171,141 @@ async function renderFileView(body, p, rel) {
   }
 }
 
+// ---------- Estudio: visor 3D + pedir cambios a la IA con captura y boceto ----------
+const MODEL_FILE_RE = /\.(bbmodel|gltf|glb|obj)$|(^|\/)models\/.+\.json$/i;
+const isModelFile = p => MODEL_FILE_RE.test(relPath(p));
+const absOf = (p, rel) => /^[a-zA-Z]:[\\/]|^\\\\/.test(rel) ? rel : p.path.replace(/[\\/]$/, '') + '\\' + rel.replace(/\//g, '\\');
+const studioReady = () => window.Studio ? Promise.resolve() : new Promise(r => window.addEventListener('studio-ready', r, { once: true }));
+async function uploadFile(file) {
+  const name = file.name || ('imagen-' + Date.now() + '.png');
+  const r = await fetch('/api/upload', { method: 'POST', headers: { 'X-File-Name': encodeURIComponent(name) }, body: file });
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json()).path;
+}
+const dataUrlToFile = async (url, name) => new File([await (await fetch(url)).blob()], name, { type: 'image/png' });
+
+function openStudio(rel) { S.studioPath = rel ? relPath(rel) : null; openPanelTab('studio'); }
+
+async function renderStudioTab(body) {
+  const p = project();
+  S.studio?.dispose?.(); S.studio = null;
+  if (!p?.path) { body.innerHTML = '<h3>Estudio</h3><div class="muted" style="font-size:13px">Este proyecto no tiene carpeta.</div>'; return; }
+  if (!S.studioPath) {
+    body.innerHTML = `<div class="files"><div class="muted" style="font-size:12.5px;margin-bottom:8px">Modelos del proyecto (Blockbench, JSON de Minecraft, glTF, OBJ). Elige uno para verlo en 3D y pedir cambios.</div><input class="in" id="stFilter" placeholder="Buscar modelo…" value="${esc(S.studioFilter || '')}" spellcheck="false"><div class="ftree" id="stList"><div class="muted">Cargando…</div></div></div>`;
+    const files = (await projectFiles(p)).filter(f => MODEL_FILE_RE.test(f));
+    if (S.panelTab !== 'studio') return;
+    const draw = () => {
+      const q = (S.studioFilter || '').toLowerCase();
+      const list = files.filter(f => f.toLowerCase().includes(q)).sort((a, b) => (/\.bbmodel$/.test(b) - /\.bbmodel$/.test(a)) || a.localeCompare(b)).slice(0, 300);
+      $('#stList').innerHTML = list.map(f => `<div class="ffile" data-sp="${esc(f)}">${ico('cube', 13)} ${esc(fileName(f))} <span class="cc-dir">${esc(f.split('/').slice(0, -1).join('/'))}</span></div>`).join('') || '<div class="muted" style="font-size:13px">No hay modelos.</div>';
+      $$('[data-sp]', body).forEach(x => x.onclick = () => openStudio(x.dataset.sp));
+    };
+    draw(); const fi = $('#stFilter'); fi.oninput = () => { S.studioFilter = fi.value; draw(); };
+    return;
+  }
+  const rel = S.studioPath, abs = absOf(p, rel);
+  body.innerHTML = `<div class="studio">
+    <div class="st-bar"><button class="icon-btn" id="stBack" title="Otros modelos">${ico('arrowLeft', 15)}</button><span class="mono fv-path" title="${esc(rel)}">${esc(fileName(rel))}</span>
+      <button class="icon-btn" id="stGame" title="Luz del juego / luz normal">${ico('sparkle', 15)}</button><button class="icon-btn" id="stWire" title="Ver la malla">${ico('layers', 15)}</button><button class="icon-btn" id="stSpin" title="Girar solo">${ico('refresh', 15)}</button><button class="icon-btn" id="stReload" title="Recargar desde el archivo">${ico('download', 15)}</button></div>
+    <div class="st-view" id="stView"><div class="st-msg muted" id="stMsg">Cargando modelo…</div></div>
+    <div class="st-parts" id="stParts"></div>
+    <div class="st-ai">
+      <div class="st-sel" id="stSel">Haz clic en una pieza para pedir un cambio solo sobre ella.</div>
+      <textarea class="in" id="stAsk" rows="2" placeholder="Pide un cambio: «la barba más larga y con 3 mechones», «añade un gorro»…" spellcheck="false"></textarea>
+      <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap"><button class="btn sm" id="stSketch">${ico('pencil', 13)} Dibujar sobre la vista</button><span id="stSketchChip"></span><span style="flex:1"></span><button class="btn sm primary" id="stSend">Enviar al Modelador 3D</button></div>
+    </div></div>`;
+  $('#stBack').onclick = () => { S.studioPath = null; renderStudioTab(body); };
+  await studioReady();
+  if (S.panelTab !== 'studio' || S.studioPath !== rel) return;
+  const assetUrl = (kind, ref) => `/api/projects/${p.id}/asset?kind=${kind}&ref=${encodeURIComponent(ref)}`;
+  const loadParent = async ref => { const r = await fetch(assetUrl('models', ref)); return r.ok ? r.json() : null; };
+  const textureUrl = async ref => assetUrl('textures', ref);
+  const drawParts = () => {
+    const parts = ctl.parts();
+    $('#stParts').innerHTML = parts.length ? parts.map(x => `<div class="st-part ${ctl.selected()?.id === x.id ? 'on' : ''}" data-pid="${esc(x.id)}" style="padding-left:${(x.depth || 0) * 12 + 6}px">${ico(x.kind === 'grupo' ? 'folder' : 'cube', 12)} ${esc(x.name)}</div>`).join('') : '';
+    $$('[data-pid]', body).forEach(x => x.onclick = () => ctl.select(x.dataset.pid));
+  };
+  const ctl = window.Studio.open($('#stView'), {
+    url: '/api/file?path=' + encodeURIComponent(abs) + '&t=' + Date.now(), name: rel, loadParent, textureUrl,
+    onSelect: part => { $('#stSel').innerHTML = part ? `Pieza elegida: <b>${esc(part.name)}</b> <button class="lnk" id="stUnsel">quitar</button>` : 'Haz clic en una pieza para pedir un cambio solo sobre ella.'; $('#stUnsel')?.addEventListener('click', () => ctl.select(null)); drawParts(); },
+  });
+  S.studio = ctl; S.studioCtlPath = rel;
+  ctl.ready.then(() => { $('#stMsg')?.remove(); drawParts(); }).catch(e => { const m = $('#stMsg'); if (m) m.textContent = 'No se pudo mostrar: ' + e.message; });
+  const tog = (id, k) => { const b = $(id); b.classList.toggle('on', !!ctl.get(k)); b.onclick = async () => { await ctl.set(k, !ctl.get(k)); b.classList.toggle('on', !!ctl.get(k)); drawParts(); }; };
+  tog('#stGame', 'game'); tog('#stWire', 'wire'); tog('#stSpin', 'spin');
+  $('#stReload').onclick = () => ctl.reload().then(drawParts);
+  let sketch = null;
+  $('#stSketch').onclick = () => openSketch({ background: ctl.snapshot(), title: 'Dibuja sobre la vista: marca lo que quieres cambiar', onDone: async file => { sketch = file; $('#stSketchChip').innerHTML = `<span class="chip">${ico('image', 12)} boceto listo</span>`; } });
+  $('#stSend').onclick = async () => {
+    const ask = $('#stAsk').value.trim(); if (!ask && !sketch) return toast('Escribe qué quieres cambiar o haz un boceto');
+    const btn = $('#stSend'); btn.disabled = true; btn.textContent = 'Preparando…';
+    try {
+      const att = [rel];
+      att.push(await uploadFile(await dataUrlToFile(ctl.snapshot(), `vista-${fileName(rel)}-${Date.now()}.png`)));
+      if (sketch) att.push(await uploadFile(sketch));
+      const part = ctl.selected();
+      const text = `Cambio en el modelo \`${rel}\`${part ? ` — pieza «${part.name}» (${part.kind})` : ''}:\n${ask || 'Sigue lo que marqué en el boceto.'}\n\nAdjunto una captura de cómo se ve ahora${sketch ? ' y un boceto con lo que quiero' : ''}. Mira las imágenes antes de empezar, cambia el archivo (o su generador si lo hay) y no toques lo demás.`;
+      $('#stAsk').value = ''; sketch = null; $('#stSketchChip').innerHTML = '';
+      if (S.view !== 'chat') { S.view = 'chat'; renderSidebar(); render(); }
+      await send(text, att, agentById('modelos') ? 'modelos' : undefined);
+      toast('Enviado al Modelador 3D: el modelo se recargará cuando lo cambie');
+    } catch (e) { toast('No se pudo enviar: ' + e.message); }
+    btn.disabled = false; btn.textContent = 'Enviar al Modelador 3D';
+  };
+}
+// Si un agente cambia el modelo abierto, se recarga solo
+let studioReloadT;
+function studioMaybeReload(path) {
+  if (!S.studio || S.panelTab !== 'studio' || !S.studioCtlPath || !sameFile(path, S.studioCtlPath)) return;
+  clearTimeout(studioReloadT); studioReloadT = setTimeout(() => S.studio?.reload().catch(() => {}), 600);
+}
+
+// ---------- Boceto: dibuja tu idea y se adjunta como imagen ----------
+function openSketch({ background = null, title = 'Boceto', onDone } = {}) {
+  const o = document.createElement('div'); o.className = 'overlay';
+  const COLORS = ['#111111', '#ffffff', '#e5484d', '#f5a524', '#46a758', '#3e8ef7', '#8e4ec6', '#c96442'];
+  o.innerHTML = `<div class="modal sketch"><header>${esc(title)}<span style="flex:1"></span><button class="icon-btn" data-x>${ico('x', 14)}</button></header>
+    <div class="sk-tools">${COLORS.map((c, i) => `<button class="sk-col ${i === (background ? 2 : 0) ? 'on' : ''}" data-c="${c}" style="background:${c}"></button>`).join('')}<input type="color" id="skPick" title="Otro color">
+      <span class="sk-sep"></span><button class="btn sm" data-t="pen">${ico('pencil', 13)} Pincel</button><button class="btn sm" data-t="eraser">Borrador</button><button class="btn sm" data-t="rect">Caja</button><button class="btn sm" data-t="arrow">Flecha</button>
+      <span class="sk-sep"></span><label class="muted" style="font-size:12px">Grosor <input type="range" id="skSize" min="1" max="40" value="5"></label>
+      <span style="flex:1"></span><button class="btn sm" id="skUndo" title="Ctrl+Z">Deshacer</button><button class="btn sm" id="skClear">Limpiar</button></div>
+    <div class="sk-wrap"><canvas id="skCanvas"></canvas></div>
+    <footer><span class="muted" style="font-size:12.5px;flex:1">Dibuja algo simple: formas, flechas, colores. La IA lo mira junto a tu texto.</span><button class="btn" data-x>Cancelar</button><button class="btn primary" id="skDone">Adjuntar boceto</button></footer></div>`;
+  document.body.appendChild(o);
+  const cv = $('#skCanvas', o), g = cv.getContext('2d');
+  const W = 1200, H = 800; cv.width = W; cv.height = H;
+  let color = background ? '#e5484d' : '#111111', size = 5, tool = 'pen', drawing = false, last = null, start = null, snap = null;
+  const hist = [];
+  const bg = new Image();
+  const paintBg = () => { g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H); if (background && bg.complete && bg.naturalWidth) { const s = Math.min(W / bg.naturalWidth, H / bg.naturalHeight); const w = bg.naturalWidth * s, h = bg.naturalHeight * s; g.fillStyle = '#2b2b2b'; g.fillRect(0, 0, W, H); g.drawImage(bg, (W - w) / 2, (H - h) / 2, w, h); } };
+  if (background) { bg.onload = paintBg; bg.src = background; }
+  paintBg();
+  const save = () => { hist.push(g.getImageData(0, 0, W, H)); if (hist.length > 40) hist.shift(); };
+  const pt = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; };
+  const stroke = () => { g.strokeStyle = tool === 'eraser' ? (background ? '#2b2b2b' : '#ffffff') : color; g.lineWidth = tool === 'eraser' ? size * 3 : size; g.lineCap = g.lineJoin = 'round'; };
+  const arrow = (a, b) => { g.beginPath(); g.moveTo(...a); g.lineTo(...b); const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), L = 14 + size * 2; g.moveTo(...b); g.lineTo(b[0] - L * Math.cos(ang - 0.45), b[1] - L * Math.sin(ang - 0.45)); g.moveTo(...b); g.lineTo(b[0] - L * Math.cos(ang + 0.45), b[1] - L * Math.sin(ang + 0.45)); g.stroke(); };
+  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); save(); drawing = true; last = start = pt(e); snap = g.getImageData(0, 0, W, H); if (tool === 'pen' || tool === 'eraser') { stroke(); g.beginPath(); g.arc(last[0], last[1], g.lineWidth / 2, 0, Math.PI * 2); g.fillStyle = g.strokeStyle; g.fill(); } };
+  cv.onpointermove = e => {
+    if (!drawing) return; const p = pt(e); stroke();
+    if (tool === 'pen' || tool === 'eraser') { g.beginPath(); g.moveTo(...last); g.lineTo(...p); g.stroke(); last = p; }
+    else { g.putImageData(snap, 0, 0); if (tool === 'rect') { g.beginPath(); g.strokeRect(start[0], start[1], p[0] - start[0], p[1] - start[1]); } else arrow(start, p); }
+  };
+  cv.onpointerup = () => { drawing = false; };
+  $$('.sk-col', o).forEach(b => b.onclick = () => { color = b.dataset.c; if (tool === 'eraser') tool = 'pen'; $$('.sk-col', o).forEach(x => x.classList.toggle('on', x === b)); markTool(); });
+  $('#skPick', o).oninput = e => { color = e.target.value; $$('.sk-col', o).forEach(x => x.classList.remove('on')); };
+  const markTool = () => $$('[data-t]', o).forEach(b => b.classList.toggle('primary', b.dataset.t === tool));
+  $$('[data-t]', o).forEach(b => b.onclick = () => { tool = b.dataset.t; markTool(); }); markTool();
+  $('#skSize', o).oninput = e => { size = +e.target.value; };
+  const undo = () => { const s = hist.pop(); if (s) g.putImageData(s, 0, 0); };
+  $('#skUndo', o).onclick = undo;
+  $('#skClear', o).onclick = () => { save(); paintBg(); };
+  const key = e => { if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); } if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', key, true);
+  const close = () => { document.removeEventListener('keydown', key, true); o.remove(); };
+  $$('[data-x]', o).forEach(b => b.onclick = close);
+  $('#skDone', o).onclick = () => cv.toBlob(async blob => { close(); const file = new File([blob], `boceto-${Date.now()}.png`, { type: 'image/png' }); if (onDone) onDone(file); else await uploadAndAttach(file); }, 'image/png');
+}
+
 // ---------- Menús de «/» y «@» en el cuadro de escritura ----------
 function setModeQuick(m) { S.mode = m; store.set('mode', m); $('#modePick')?.dispatchEvent(new Event('redraw')); toast('Modo: ' + (MODES.find(x => x.id === m)?.label || m)); }
 const SLASH = [
@@ -1184,6 +1322,8 @@ const SLASH = [
   { c: 'cambios', d: 'Archivos modificados y sus diferencias', i: 'diff', run: () => openPanelTab('changes') },
   { c: 'archivos', d: 'Explorador de archivos del proyecto', i: 'folder', run: () => openPanelTab('files') },
   { c: 'navegador', d: 'Vista previa web', i: 'globe', run: () => openPanelTab('browser') },
+  { c: 'estudio', d: 'Visor 3D de modelos para revisarlos y pedir cambios', i: 'cube', run: () => openStudio(S.studioPath) },
+  { c: 'boceto', d: 'Dibuja tu idea y se adjunta al mensaje', i: 'pencil', run: () => openSketch() },
   { c: 'lateral', d: 'Chat lateral (Ctrl+;)', i: 'chat', run: () => openPanelTab('side') },
   { c: 'tareas', d: 'Trabajos en segundo plano', i: 'list', run: () => openPanelTab('tasks') },
   { c: 'uso', d: 'Uso y límites de tus cuentas', i: 'chart', run: () => { S.view = 'settings'; S.settingsTab = 'usage'; renderSidebar(); render(); } },
@@ -1361,6 +1501,7 @@ async function renderPanel() {
   if (S.panelTab === 'changes') return renderChangesTab(body);
   if (S.panelTab === 'browser') return renderBrowserTab(body);
   if (S.panelTab === 'files') return renderFilesTab(body);
+  if (S.panelTab === 'studio') return renderStudioTab(body);
   if (S.panelTab === 'board') {
     const p = project();
     if (!p) { body.innerHTML = '<div class="muted">Elige un proyecto.</div>'; return; }
@@ -2219,7 +2360,7 @@ addEventListener('focus', () => {
 });
 
 (async function init() {
-  $('#panelTabs').innerHTML = [['board', 'Pizarra'], ['plan', 'Plan'], ['tasks', 'Tareas'], ['terminal', 'Terminal'], ['changes', 'Cambios'], ['browser', 'Navegador'], ['files', 'Archivos'], ['side', 'Lateral'], ['artifact', 'Artefacto']].map(([t, l]) => `<button data-tab="${t}" class="${t === S.panelTab ? 'on' : ''}">${l}</button>`).join('');
+  $('#panelTabs').innerHTML = [['board', 'Pizarra'], ['plan', 'Plan'], ['tasks', 'Tareas'], ['terminal', 'Terminal'], ['changes', 'Cambios'], ['browser', 'Navegador'], ['files', 'Archivos'], ['studio', 'Estudio'], ['side', 'Lateral'], ['artifact', 'Artefacto']].map(([t, l]) => `<button data-tab="${t}" class="${t === S.panelTab ? 'on' : ''}">${l}</button>`).join('');
   $$('#panelTabs button').forEach(b => b.onclick = () => { S.panelTab = b.dataset.tab; renderPanel(); });
   $$('[data-i]').forEach(e => e.insertAdjacentHTML('afterbegin', ico(e.dataset.i, +e.dataset.s || 17)));
   $('#moreBtn').onclick = e => moreMenu(e.currentTarget);

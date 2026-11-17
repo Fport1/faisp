@@ -160,6 +160,7 @@ impl AppState {
             live: Default::default(),
             keep_awake: Default::default(),
         });
+        let _ = providers::EXTRA_DIR.set(st.data.join("uploads").to_string_lossy().to_string());
         st.flush();
         st
     }
@@ -1079,6 +1080,11 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
             parts.push("## Aviso\nGemini no tiene clave: pide al usuario que la añada en Ajustes → Modelos → Google Gemini (es gratis).".into());
         }
     }
+    // Bocetos y capturas: los agentes con visión los abren y los miran
+    let imgs: Vec<&String> = step.attachments.iter().filter(|a| crate::gemini_media::mime_for(std::path::Path::new(a.as_str())).map(|m| m.starts_with("image")).unwrap_or(false)).collect();
+    if !imgs.is_empty() && !agent.mcp.iter().any(|m| m == "gemini-media") {
+        parts.push(format!("## Imágenes adjuntas (bocetos o capturas del usuario)\nÁbrelas con tu herramienta de lectura (Read muestra imágenes) ANTES de empezar y sigue lo que muestran: formas, proporciones, colores y lo que el usuario marcó.\n{}", imgs.iter().map(|m| format!("- {m}")).collect::<Vec<_>>().join("\n")));
+    }
     // Para Claude Code: mismo conjunto de servidores MCP en un .mcp.json temporal
 
 
@@ -1276,7 +1282,7 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
 
     let planner = st.cfg.read().unwrap().routing.planner.clone();
     let agent_id = agent_id.or_else(|| {
-        let media = attachments.iter().any(|a| crate::gemini_media::mime_for(std::path::Path::new(a)).map(|m| m.starts_with("video") || m.starts_with("audio") || m.starts_with("image")).unwrap_or(false));
+        let media = attachments.iter().any(|a| crate::gemini_media::mime_for(std::path::Path::new(a)).map(|m| m.starts_with("video") || m.starts_with("audio")).unwrap_or(false));
         (media && st.agent("multimedia").is_some()).then(|| "multimedia".to_string())
     });
     let local = if attachments.is_empty() { local_answer(&text) } else { None };

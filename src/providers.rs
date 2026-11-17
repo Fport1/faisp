@@ -12,6 +12,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Carpeta extra que pueden leer los agentes de Claude Code (subidas: bocetos, capturas).
+pub static EXTRA_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 pub trait Sink: Send + Sync {
     fn text(&self, t: &str);
     fn tool(&self, name: &str, input: &Value);
@@ -746,6 +749,10 @@ pub fn claude_code_args(model: &str, req: &LlmRequest, has_cwd: bool) -> Vec<Str
         _ => "auto",
     };
     a.extend(["--permission-mode".into(), pm.into()]);
+    // Bocetos, capturas y archivos subidos: que Claude Code pueda leerlos
+    if let Some(d) = EXTRA_DIR.get() {
+        a.extend(["--add-dir".into(), d.clone()]);
+    }
     a.push("--strict-mcp-config".into());
     if let Some(c) = &req.mcp_config {
         a.extend(["--mcp-config".into(), c.clone()]);

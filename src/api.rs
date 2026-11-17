@@ -34,6 +34,12 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/logos.js", get(|| ui("logos.js")))
         .route("/icon.svg", get(|| ui("icon.svg")))
         .route("/manifest.json", get(|| ui("manifest.json")))
+        .route("/studio.js", get(|| ui("studio.js")))
+        .route("/vendor/three/three.module.min.js", get(|| ui("vendor/three/three.module.min.js")))
+        .route("/vendor/three/addons/controls/OrbitControls.js", get(|| ui("vendor/three/addons/controls/OrbitControls.js")))
+        .route("/vendor/three/addons/loaders/GLTFLoader.js", get(|| ui("vendor/three/addons/loaders/GLTFLoader.js")))
+        .route("/vendor/three/addons/loaders/OBJLoader.js", get(|| ui("vendor/three/addons/loaders/OBJLoader.js")))
+        .route("/vendor/three/addons/utils/BufferGeometryUtils.js", get(|| ui("vendor/three/addons/utils/BufferGeometryUtils.js")))
         .route("/icon-512.png", get(|| png(include_bytes!("../ui/icon-512.png"))))
         .route("/icon-256.png", get(|| png(include_bytes!("../ui/icon-256.png"))))
         .route("/icon-192.png", get(|| png(include_bytes!("../ui/icon-192.png"))))
@@ -94,6 +100,12 @@ async fn ui(name: &'static str) -> Response {
         "manifest.json" => include_str!("../ui/manifest.json"),
         "vendor/marked.js" => include_str!("../ui/vendor/marked.js"),
         "vendor/purify.js" => include_str!("../ui/vendor/purify.js"),
+        "studio.js" => include_str!("../ui/studio.js"),
+        "vendor/three/three.module.min.js" => include_str!("../ui/vendor/three/three.module.min.js"),
+        "vendor/three/addons/controls/OrbitControls.js" => include_str!("../ui/vendor/three/addons/controls/OrbitControls.js"),
+        "vendor/three/addons/loaders/GLTFLoader.js" => include_str!("../ui/vendor/three/addons/loaders/GLTFLoader.js"),
+        "vendor/three/addons/loaders/OBJLoader.js" => include_str!("../ui/vendor/three/addons/loaders/OBJLoader.js"),
+        "vendor/three/addons/utils/BufferGeometryUtils.js" => include_str!("../ui/vendor/three/addons/utils/BufferGeometryUtils.js"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, ctype)], body).into_response()
@@ -488,6 +500,56 @@ async fn project_git_diff(State(st): St, Path(id): Path<String>, Query(q): Query
     Ok(Json(json!({"path": q.path, "diff": diff})))
 }
 
+// ---------------- Recursos de Minecraft para el Estudio (texturas y modelos padre) ----------------
+
+fn find_asset(root: &std::path::Path, suffix: &str) -> Option<std::path::PathBuf> {
+    for base in ["src/main/resources", "common/src/main/resources", "fabric/src/main/resources", "src/client/resources", "resources", ""] {
+        let p = root.join(base).join(suffix);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    fn walk(dir: &std::path::Path, suffix: &str, depth: usize, seen: &mut usize) -> Option<std::path::PathBuf> {
+        if depth > 9 || *seen > 40_000 { return None; }
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            *seen += 1;
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || crate::context::IGNORE.contains(&name.as_str()) { continue; }
+            let p = e.path();
+            if p.is_dir() {
+                if name == "assets" {
+                    let c = p.parent()?.join(suffix);
+                    if c.is_file() { return Some(c); }
+                }
+                if let Some(f) = walk(&p, suffix, depth + 1, seen) { return Some(f); }
+            }
+        }
+        None
+    }
+    walk(root, suffix, 0, &mut 0)
+}
+
+#[derive(Deserialize)]
+struct AssetQ {
+    kind: String,
+    #[serde(rename = "ref")]
+    reference: String,
+}
+async fn project_asset(State(st): St, Path(id): Path<String>, Query(q): Query<AssetQ>) -> Response {
+    let Ok(p) = find_project(&st, &id) else { return StatusCode::NOT_FOUND.into_response() };
+    let (ns, path) = q.reference.split_once(':').unwrap_or(("minecraft", q.reference.as_str()));
+    if path.contains("..") || ns.contains("..") || !(q.kind == "textures" || q.kind == "models") {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let ext = if q.kind == "textures" { "png" } else { "json" };
+    let suffix = format!("assets/{ns}/{}/{path}.{ext}", q.kind);
+    let root = std::path::PathBuf::from(&p.path);
+    match tokio::task::spawn_blocking(move || find_asset(&root, &suffix)).await.ok().flatten().and_then(|f| std::fs::read(f).ok()) {
+        Some(b) => ([(header::CONTENT_TYPE, if ext == "png" { "image/png" } else { "application/json" }), (header::CACHE_CONTROL, "no-store")], b).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 // ---------------- Artefactos ----------------
 
 #[derive(Deserialize)]
@@ -867,6 +929,7 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/chats/{id}/live", get(chat_live))
         .route("/api/terminal", post(terminal_run))
         .route("/api/projects/{id}/git", get(project_git))
+        .route("/api/projects/{id}/asset", get(project_asset))
         .route("/api/projects/{id}/git/diff", get(project_git_diff))
         .route("/api/chats/{id}/fork", post(chat_fork))
         .route("/api/chats/{id}/rewind", post(chat_rewind))

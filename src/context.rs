@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
-const IGNORE: &[&str] = &["node_modules", ".git", ".gradle", "build", "run", "runs", "dist", "libs", "out", ".idea", ".vscode", "bin", "target", "gradle", "__pycache__", ".next"];
+pub const IGNORE: &[&str] = &["node_modules", ".git", ".gradle", "build", "run", "runs", "dist", "libs", "out", ".idea", ".vscode", "bin", "target", "gradle", "__pycache__", ".next"];
 const BINARY_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "ogg", "wav", "mp3", "jar", "zip", "class", "nbt", "mca", "dat", "psd", "fpack", "exe", "dll", "so", "pdb", "rlib", "ico", "ttf", "otf", "woff", "woff2"];
 
 pub fn estimate_tokens(s: &str) -> usize {
