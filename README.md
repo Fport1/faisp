@@ -78,6 +78,22 @@ Las acciones que cambian algo siguen el modo de permisos.
 
 **ElevenLabs:** el agente "Audio y voz" lista tus voces y genera voz, efectos y música en `.mp3`. Si el Modpack Launcher está conectado, los convierte a `.ogg` para Minecraft.
 
+## Sistemas y teléfono
+
+- **Windows**: se compila en el PC (`cargo build --release`, toolchain GNU) y `node scripts/build-web.mjs` genera
+  `web/descargar/faisp-windows.zip` con `Instalar.cmd`.
+- **macOS** (binario universal Intel + Apple Silicon) y **Linux x64**: los compila GitHub Actions
+  (`.github/workflows/build.yml`, a mano o con una etiqueta `v*`). Se bajan con
+  `gh run download <id> -D dist-ci` y `build-web.mjs` los publica. En macOS firma y notariza si el repositorio tiene
+  los secrets `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` y `APPLE_API_KEY_CONTENT`;
+  si no, firma ad-hoc.
+- **Teléfono** (`/m`): interfaz propia para iPhone/Android. Se activa en Ajustes → General → Móvil: abre un segundo
+  servidor en la red local (puerto 4320) protegido con una clave secreta que se empareja con un QR. El PC hace el
+  trabajo; desde el teléfono no se pueden ver claves ni usar la terminal. En Safari: Compartir → Añadir a pantalla de
+  inicio.
+- **Actualizaciones**: la app consulta `https://faisp.vercel.app/descargar/version.json`; en Windows se instala sola
+  (comprobando la huella SHA-256), en macOS y Linux lleva a la página de descarga.
+
 ## Estudio 3D, bocetos y paneles
 
 - **Estudio** (icono del cubo, `/estudio`): visor 3D de modelos de Blockbench (`.bbmodel`, con UV de caja), JSON de bloque e

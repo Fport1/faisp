@@ -38,6 +38,14 @@ for (const f of ['faisp-macos.zip', 'faisp-linux-x64.tar.gz']) {
   const hit = ['dist-ci', 'dist-ci/faisp-macos', 'dist-ci/faisp-linux'].map(d => path.join(root, d, f)).find(p => fs.existsSync(p));
   if (hit) { fs.copyFileSync(hit, path.join(out, 'descargar', f)); console.log('Descarga:', f); } else console.warn('Sin ' + f + ' (descárgalo de GitHub Actions a dist-ci/)');
 }
+// Si falta un paquete, su botón de la web sale como «próximamente»
+{
+  const ip = path.join(out, 'index.html'); let h = fs.readFileSync(ip, 'utf8');
+  for (const f of ['faisp-macos.zip', 'faisp-linux-x64.tar.gz', 'faisp-windows.zip'])
+    if (!fs.existsSync(path.join(out, 'descargar', f))) h = h.replace(new RegExp('<a class="btn accent" href="/descargar/' + f.replace(/./g, '\.') + '" download>[^<]*</a>'), '<a class="btn" aria-disabled="true">Próximamente</a>');
+  if (!fs.existsSync(path.join(out, 'descargar', 'faisp-macos.zip'))) h = h.replace('macOS (Intel y Apple Silicon)', 'macOS (próximamente)');
+  fs.writeFileSync(ip, h);
+}
 // version.json: la app lo consulta para avisar de actualizaciones (y comprobar la huella del paquete)
 {
   const version = /^version\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8'))[1];
