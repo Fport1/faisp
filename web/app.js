@@ -191,6 +191,8 @@ const md = text => DOMPurify.sanitize(marked.parse(text || ''), { ADD_ATTR: ['ta
 async function loadState() {
   S.st = await api('GET', '/api/state');
   api('GET', '/api/claude/limits').then(l => { S.limits = l; if (S.view === 'chat') drawLimitBanner(); drawUsageRing(); }).catch(() => {});
+  // Al arrancar (como mucho cada 6 h): ¿hay versión nueva?
+  if (!S.update && Date.now() - +store.get('updCheckedAt', '0') > 6 * 3600e3) checkUpdates(true); else drawUpdateChip();
   if (!S.planName && S.st.providerReady?.claude) api('GET', '/api/account').then(a => { S.planName = a?.subscriptionType || a?.plan || ''; }).catch(() => {});
   const projects = S.st.projects;
   if (!projects.some(p => p.id === S.projectId)) S.projectId = projects.find(p => p.path)?.id || projects[0]?.id || null;
@@ -1962,16 +1964,49 @@ async function viewSettings(v) {
   catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 }
 
+async function checkUpdates(silent) {
+  try {
+    const r = await api('GET', '/api/update/check');
+    S.update = r; store.set('updCheckedAt', String(Date.now()));
+    drawUpdateChip();
+    return r;
+  } catch (e) { if (!silent) toast('No se pudo comprobar: ' + e.message.slice(0, 120)); return null; }
+}
+async function installUpdate() {
+  const u = S.update; if (!u?.available) return;
+  if (!(await ask(`¿Actualizar faisp a la versión ${u.latest}? Se descargará (${u.size ? Math.round(u.size / 1048576 * 10) / 10 + ' MB' : 'unos MB'}), faisp se cerrará y se volverá a abrir. Tus chats, claves y ajustes se conservan.`, { ok: 'Actualizar ahora' }))) return;
+  toast('Descargando la versión ' + u.latest + '…');
+  try {
+    const r = await fetch('/api/update/install', { method: 'POST', headers: { 'X-Faisp': '1' } });
+    if (!r.ok) throw new Error(await r.text());
+    toast('Instalando: faisp se cerrará y se abrirá sola en unos segundos');
+  } catch (e) { toast('No se pudo actualizar: ' + e.message.slice(0, 160)); }
+}
+function drawUpdateChip() {
+  $('#updChip')?.remove();
+  const u = S.update; if (!u?.available) return;
+  const host = $('.side-foot') || $('#sidebar') || document.body;
+  host.insertAdjacentHTML('afterbegin', `<button class="upd-chip" id="updChip" title="${esc(u.notes || '')}">${ico('download', 14)} <span>Nueva versión ${esc(u.latest)}</span><b>Actualizar</b></button>`);
+  $('#updChip').onclick = installUpdate;
+}
+
 function setGeneral(body, cfg, save) {
   const p = cfg.profile || {};
+  setTimeout(() => {
+    const btn = $('#updCheck'); if (!btn) return;
+    const draw = r => { const st = $('#updState'), box = $('#updBox'); if (!st) return; if (!r) { st.textContent = ''; return; } st.textContent = r.available ? '' : 'Tienes la última versión (' + r.latest + ')'; box.innerHTML = r.available ? `<div class="test warnbox" style="margin:8px 0">${ico('download', 13)} Hay una versión nueva: <b>${esc(r.latest)}</b>${r.notes ? ' · ' + esc(String(r.notes).slice(0, 200)) : ''} <button class="btn sm primary" id="updNow" style="margin-left:8px">Actualizar ahora</button></div>` : ''; $('#updNow')?.addEventListener('click', installUpdate); };
+    btn.onclick = async () => { btn.disabled = true; $('#updState').textContent = 'Comprobando…'; draw(await checkUpdates(false)); btn.disabled = false; };
+    if (S.update) draw(S.update); else btn.click();
+  }, 0);
   body.innerHTML = `<section class="block"><h2>Perfil</h2><div class="form">
       <div class="two"><label>Cómo te llamamos<input type="text" id="pn" value="${esc(p.name || '')}" placeholder="Tu nombre"></label>
       <label>Idioma de respuesta<select class="in" id="pl">${[['es', 'Español'], ['en', 'English'], ['auto', 'El de mi mensaje']].map(([k, l]) => `<option value="${k}" ${p.language === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
       <label>Instrucciones personales (las leen todos los agentes; se cachean)<textarea class="in" id="pi" rows="5" placeholder="Ej.: Respóndeme corto. Programo en Java/Fabric. No toques la UI del menú principal.">${esc(p.instructions || '')}</textarea></label></div></section>
     <section class="block"><h2>Corrector</h2><label class="check"><input type="checkbox" id="psc" ${p.spellcheck !== false ? 'checked' : ''}> Revisar ortografía y gramática mientras escribes en el chat (estilo Google Docs)</label>
       <div class="form two" style="margin-top:10px"><label>Idioma<select class="in" id="psl">${[['auto', 'Detectar (español / inglés)'], ['es', 'Español'], ['en-US', 'Inglés (EE. UU.)'], ['en-GB', 'Inglés (Reino Unido)']].map(([k, l]) => `<option value="${k}" ${(p.spellLang || 'auto') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
-      <p class="muted" style="font-size:12.5px">Usa LanguageTool (languagetool.org): el texto que escribes en el chat se envía a su servicio para revisarlo. Haz clic en una palabra subrayada (o Ctrl+Espacio) para ver sugerencias.</p></section>
+      <p class="muted" style="font-size:12.5px">Usa LanguageTool (languagetool.org): el texto que escribes en el chat se envía a su servicio para revisarlo. Pasa el ratón o pon el cursor sobre una palabra subrayada para ver la corrección; Tab la acepta.</p></section>
     <section class="block"><h2>Apariencia</h2><div class="row">${['light', 'dark', 'system'].map(t => `<button class="btn ${(document.documentElement.dataset.theme || 'system') === t ? 'primary' : ''}" data-theme="${t}">${{ light: 'Claro', dark: 'Oscuro', system: 'Sistema' }[t]}</button>`).join('')}</div></section>
+    <section class="block"><h2>Actualizaciones</h2><div class="row" style="gap:10px;flex-wrap:wrap"><span>Versión <b>${esc(S.st.version || '')}</b> <span class="alpha-tag">alfa</span></span><span class="muted" id="updState" style="font-size:13px;flex:1"></span><button class="btn sm" id="updCheck">${ico('refresh', 13)} Buscar actualizaciones</button></div><div id="updBox"></div><p class="muted" style="font-size:12.5px">faisp está en fase alfa: puede tener fallos. Al actualizar se cierra, se instala la versión nueva y se vuelve a abrir; tus chats, claves y ajustes no se tocan.</p></section>
     <section class="block"><h2>Datos</h2><p>Todo se guarda en tu ordenador: <span class="mono">${esc(S.st.dataDir)}</span></p></section>
     <button class="btn primary" id="sv">Guardar</button>`;
   $$('[data-theme]', body).forEach(b => b.onclick = () => { const t = b.dataset.theme; if (t === 'system') { delete document.documentElement.dataset.theme; store.set('theme', ''); } else { document.documentElement.dataset.theme = t; store.set('theme', t); } setGeneral(body, cfg, save); });
