@@ -207,8 +207,20 @@ pub fn tool_list_dir(project: &Project, rel: &str) -> String {
     if items.is_empty() { "(vacía)".into() } else { items.join("\n") }
 }
 
+/// Marca de imagen en el resultado de read_file: los proveedores con visión la convierten en un bloque de imagen.
+pub const IMAGE_MARK: &str = "@@faisp-imagen@@";
+
 pub fn tool_read_file(project: &Project, rel: &str, start: usize, max_lines: usize, max_chars: usize) -> String {
     let Ok(p) = safe_path(project, rel) else { return "Ruta no permitida".into() };
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if let Some(mime) = match ext.as_str() { "png" => Some("image/png"), "jpg" | "jpeg" => Some("image/jpeg"), "webp" => Some("image/webp"), "gif" => Some("image/gif"), _ => None } {
+        use base64::Engine;
+        return match std::fs::read(&p) {
+            Ok(b) if b.len() <= 4_500_000 => format!("{IMAGE_MARK}{mime}@@{rel}@@{}", base64::engine::general_purpose::STANDARD.encode(&b)),
+            Ok(b) => format!("La imagen {rel} pesa {} KB (máx. 4,5 MB para verla); usa analizar_medio_gemini.", b.len() / 1024),
+            Err(e) => format!("No se pudo leer {rel}: {e}"),
+        };
+    }
     let content = if crate::documents::is_document(&p) { crate::documents::extract(&p) } else { std::fs::read_to_string(&p).map_err(anyhow::Error::from) };
     match content {
         Ok(t) => {
@@ -267,4 +279,21 @@ pub fn write_with_backup(project: &Project, rel: &str, content: &str, backups: &
     }
     std::fs::write(p, content)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn read_file_devuelve_imagenes_como_imagen() {
+        let dir = std::env::temp_dir().join(format!("faisp-test-img-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("runs")).unwrap();
+        std::fs::write(dir.join("runs/captura.png"), [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+        std::fs::write(dir.join("a.txt"), "hola").unwrap();
+        let p = Project { path: dir.to_string_lossy().into(), ..Default::default() };
+        let r = tool_read_file(&p, "runs/captura.png", 1, 100, 10_000);
+        assert!(r.starts_with(&format!("{IMAGE_MARK}image/png@@runs/captura.png@@")), "{r}");
+        assert!(tool_read_file(&p, "a.txt", 1, 100, 10_000).contains("hola"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

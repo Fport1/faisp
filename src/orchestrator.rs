@@ -205,6 +205,19 @@ fn seed(db: &mut Db, data: &std::path::Path) {
     // Skill de ejemplo para enseñar el formato para enseñar el formato
     let sk = data.join("skills");
     let _ = std::fs::create_dir_all(&sk);
+    // Skills que trae faisp: se instalan si faltan y se actualizan si la copia es de una versión anterior de faisp
+    for (name, body) in [("probar-mods-minecraft.md", include_str!("../assets/skills/probar-mods-minecraft.md"))] {
+        let p = sk.join(name);
+        let ver = |t: &str| t.split("<!-- incluida con faisp: v").nth(1).and_then(|r| r.split(' ').next()).and_then(|v| v.parse::<u32>().ok());
+        let mine = ver(body).unwrap_or(0);
+        let write = match std::fs::read_to_string(&p) {
+            Err(_) => true,
+            Ok(old) => ver(&old).map(|v| v < mine).unwrap_or(false),
+        };
+        if write {
+            let _ = std::fs::write(&p, body);
+        }
+    }
     let ex = sk.join("ejemplo.md");
     if !ex.exists() && std::fs::read_dir(&sk).map(|mut d| d.next().is_none()).unwrap_or(true) {
         let _ = std::fs::write(&ex, "---
@@ -596,7 +609,7 @@ async fn ask_approval(st: &AppState, tx: &Tx, step_id: &str, tool: &str, detail:
 }
 
 fn run_command_spec() -> Value {
-    json!({"name":"run_command","description":"Ejecuta un comando de consola en la carpeta del proyecto (Windows: cmd /C). Útil para compilar o probar (p. ej. gradlew build). Devuelve la salida y el código de salida.","input_schema":{"type":"object","properties":{"command":{"type":"string"},"timeout_s":{"type":"integer"}},"required":["command"],"additionalProperties":false}})
+    json!({"name":"run_command","description":"Ejecuta un comando de consola en la carpeta del proyecto (Windows: cmd /C). Útil para compilar o probar (p. ej. gradlew compileJava, gradlew runClient). Devuelve la salida y el código de salida. timeout_s hasta 1800: compila en una llamada aparte antes de abrir el juego, porque la primera compilación descarga dependencias.","input_schema":{"type":"object","properties":{"command":{"type":"string"},"timeout_s":{"type":"integer"}},"required":["command"],"additionalProperties":false}})
 }
 
 async fn run_command(project: &Project, command: &str, timeout_s: u64) -> String {
@@ -715,7 +728,7 @@ fn make_tools(st: Arc<AppState>, project: Option<Project>, chat_id: String, agen
                 if !allowed {
                     return "El usuario denegó el comando.".into();
                 }
-                let t = input["timeout_s"].as_u64().unwrap_or(180).clamp(5, 900);
+                let t = input["timeout_s"].as_u64().unwrap_or(180).clamp(5, 1800);
                 return run_command(&project, &command, t).await;
             }
 

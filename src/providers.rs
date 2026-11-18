@@ -381,7 +381,7 @@ async fn run_tools(calls: Vec<(String, String, Value, bool)>, exec: &Option<Tool
             ("Herramienta no disponible".to_string(), true)
         };
         let short_in = serde_json::to_string(&input).unwrap_or_default().chars().take(300).collect();
-        log.push(ToolCallLog { name: name.clone(), input: short_in, result: result.chars().take(400).collect() });
+        log.push(ToolCallLog { name: name.clone(), input: short_in, result: if result.starts_with(crate::context::IMAGE_MARK) { "(imagen)".into() } else { result.chars().take(400).collect() } });
         out.push((id, result, is_err));
     }
     out
@@ -554,7 +554,12 @@ async fn anthropic(http: &reqwest::Client, pid: &str, p: &Provider, model: &str,
             let content: Vec<Value> = results
                 .into_iter()
                 .map(|(id, r, err)| {
-                    let mut v = json!({"type":"tool_result","tool_use_id": id, "content": r});
+                    // read_file de una imagen: se la enseñamos a Claude como imagen (ve las capturas él mismo)
+                    let content = match r.strip_prefix(crate::context::IMAGE_MARK).and_then(|x| x.split_once("@@")).and_then(|(mime, rest)| rest.split_once("@@").map(|(path, data)| (mime, path, data))) {
+                        Some((mime, path, data)) => json!([{"type":"image","source":{"type":"base64","media_type": mime,"data": data}}, {"type":"text","text": format!("Imagen: {path}")}]),
+                        None => json!(r),
+                    };
+                    let mut v = json!({"type":"tool_result","tool_use_id": id, "content": content});
                     if err {
                         v["is_error"] = json!(true);
                     }
@@ -702,6 +707,7 @@ async fn openai(http: &reqwest::Client, pid: &str, p: &Provider, model: &str, re
             msgs.push(json!({"role":"assistant","content": if text.is_empty() { Value::Null } else { json!(text) },
                 "tool_calls": calls.iter().map(|(id, n, a)| json!({"id": id, "type":"function","function":{"name": n, "arguments": a}})).collect::<Vec<_>>()}));
             for (id, r, _) in run_tools(parsed, &exec, sink, &mut result.tool_log).await {
+                let r = if r.starts_with(crate::context::IMAGE_MARK) { "Este modelo no puede ver imágenes con read_file: usa analizar_medio_gemini con la misma ruta.".to_string() } else { r };
                 msgs.push(json!({"role":"tool","tool_call_id": id, "content": r}));
             }
             round += 1;

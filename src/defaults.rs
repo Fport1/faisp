@@ -89,6 +89,12 @@ pub fn recommended(id: &str) -> Option<(&'static str, &'static [&'static str])> 
 const AUDIO_KW: &[&str] = &["voz", "voces", "narración", "narracion", "narrador", "doblaje", "voz en off", "diálogos hablados", "dialogos hablados", "sonido", "sonidos", "efecto de sonido", "efectos de sonido", "música", "musica", "banda sonora", "elevenlabs", "tts", "genera audio", "crea audio"];
 const MEDIA_KW: &[&str] = &["vídeo", "video", "videos", "vídeos", "clip", "grabación", "grabacion", "transcribe", "transcripción", "transcripcion", "subtítulos", "subtitulos", "mira este", "mira esta", "qué pasa en", "analiza el audio", "analiza la imagen", "analiza el vídeo", "describe la imagen", "minuto"];
 
+/// Código también prueba los mods en desarrollo (gradlew runClient, escenas, capturas)
+pub const CODE_TEST: &str = "PROBAR UN MOD EN DESARROLLO: nunca con el Modpack Launcher. Usa run_command con gradlew runClient y las propiedades de prueba del proyecto (dev.shots, dev.scene, dev.world), que abren Minecraft directo en el mundo, hacen las capturas solas y cierran el juego. Compila antes en otra llamada (gradlew compileJava). Luego lee las líneas [shots] del log y mira las capturas (read_file si ves imágenes; si no, analizar_medio_gemini). Sigue la skill probar-mods-minecraft.";
+pub const CODE_TEST_KW: &[&str] = &["probar", "prueba", "pruebas", "pruébalo", "pruebalo", "testea", "capturas", "captura", "foto", "fotos", "runclient", "gradlew", "abre minecraft", "en el juego"];
+pub const LAUNCHER_DESC: &str = "Trabaja con las instancias YA INSTALADAS del Modpack Launcher: crashes, mods, packs, configs y registro del juego. NO prueba mods en desarrollo (eso lo hace Código con gradlew runClient).";
+pub const LAUNCHER_EXCEPTION: &str = "EXCEPCIÓN: si la tarea es probar un mod que se está desarrollando (un proyecto con build.gradle), NO abras el launcher ni lances instancias: di que eso le toca al agente Código con gradlew runClient.";
+
 pub fn default_agents() -> Vec<Agent> {
     let mut v = vec![
         agent("orquestador", "Orquestador", "compass", "#d97757", OPUS, "medium",
@@ -96,9 +102,9 @@ pub fn default_agents() -> Vec<Agent> {
             "Eres el orquestador de un equipo de IAs especializadas. Tu trabajo es planificar, no ejecutar.".into(), false,
             &["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-20b", "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast", "ollama:qwen2.5:7b"]),
         agent("codigo", "Programador", "code", "#6a9bcc", OPUS, "medium",
-            "Código, mixins, Gradle, shaders, JSON de datos, depuración.",
-            &["código", "codigo", "java", "kotlin", "rust", "mixin", "fabric", "gradle", "bug", "error", "crash", "shader", "clase", "registrar", "registro", "compila", "función", "funcion", "script", "api", "refactor", "implementa", "datapack", "receta", "loot"],
-            format!("Eres el programador senior del equipo. Escribes código correcto, mínimo y coherente con el estilo del proyecto. Explicas solo lo necesario.\n{TOOLS_HINT}\n{FILE_FORMAT}"), true,
+            "Código, mixins, Gradle, shaders, JSON de datos, depuración. También PRUEBA los mods en desarrollo: abre Minecraft con gradlew runClient (escenas automáticas), toma capturas y las revisa.",
+            &["código", "codigo", "java", "kotlin", "rust", "mixin", "fabric", "gradle", "bug", "error", "crash", "shader", "clase", "registrar", "registro", "compila", "función", "funcion", "script", "api", "refactor", "implementa", "datapack", "receta", "loot", "probar", "prueba", "pruebas", "pruébalo", "pruebalo", "testea", "capturas", "captura", "foto", "fotos", "runclient", "gradlew", "abre minecraft", "en el juego"],
+            format!("Eres el programador senior del equipo. Escribes código correcto, mínimo y coherente con el estilo del proyecto. Explicas solo lo necesario.\n{TOOLS_HINT}\n{FILE_FORMAT}\n\n{CODE_TEST}"), true,
             &["anthropic:claude-sonnet-5-5", "groq:openai/gpt-oss-120b", "ollama:qwen2.5-coder"]),
         agent("modelos", "Modelador 3D", "cube", "#9b87f5", OPUS, "medium",
             "Modelos Blockbench/JSON, geometría, UV, animaciones de entidades e ítems.",
@@ -148,6 +154,9 @@ pub fn default_agents() -> Vec<Agent> {
             a.keywords = AUDIO_KW.iter().map(|s| s.to_string()).collect();
             a.description = "CREA audio con tus voces de ElevenLabs: diálogos hablados, narración, efectos de sonido y música; los prepara para el juego.".into();
         }
+        if a.id == "codigo" && !a.mcp.iter().any(|m| m == "gemini-media") {
+            a.mcp.push("gemini-media".into());
+        }
         if a.id == "multimedia" {
             a.name = "Analista multimedia".into();
             a.keywords = MEDIA_KW.iter().map(|s| s.to_string()).collect();
@@ -173,7 +182,7 @@ pub fn default_config() -> Config {
     pricing.insert("claude-haiku-5-5".into(), vec![0.1, 0.5, 0.01]);
 
     Config {
-        version: 4,
+        version: 5,
         providers: default_providers(),
         agents: default_agents(),
         routing: Routing::default(),
@@ -239,6 +248,25 @@ pub fn migrate(cfg: &mut Config) {
             }
         }
         cfg.version = 4;
+    }
+    // v5: las pruebas de mods en desarrollo las hace Código (gradlew runClient), no el Modpack Launcher
+    if cfg.version < 5 {
+        if let Some(a) = cfg.agents.iter_mut().find(|a| a.id == "codigo") {
+            for k in CODE_TEST_KW {
+                if !a.keywords.iter().any(|x| x == k) { a.keywords.push(k.to_string()); }
+            }
+            if !a.mcp.iter().any(|m| m == "gemini-media") { a.mcp.push("gemini-media".into()); }
+            if !a.system.contains("PROBAR UN MOD") { a.system = format!("{}\n\n{CODE_TEST}", a.system.trim_end()); }
+            if a.description.starts_with("Código, mixins, Gradle, shaders, JSON de datos, depuración.") && !a.description.contains("PRUEBA") {
+                a.description = "Código, mixins, Gradle, shaders, JSON de datos, depuración. También PRUEBA los mods en desarrollo: abre Minecraft con gradlew runClient (escenas automáticas), toma capturas y las revisa.".into();
+            }
+        }
+        if let Some(a) = cfg.agents.iter_mut().find(|a| a.id == "launcher") {
+            a.keywords.retain(|k| !["lanzar", "partida", "en el juego"].contains(&k.as_str()));
+            if !a.system.contains("EXCEPCIÓN") { a.system = format!("{}\n\n{LAUNCHER_EXCEPTION}", a.system.trim_end()); }
+            if a.description.contains("pruebas en vivo") { a.description = LAUNCHER_DESC.into(); }
+        }
+        cfg.version = 5;
     }
     // Cloudflare como respaldo gratuito del orquestador y el revisor
     for a in cfg.agents.iter_mut().filter(|a| a.builtin && (a.id == "orquestador" || a.id == "revisor")) {
