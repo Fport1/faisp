@@ -95,10 +95,31 @@ async function chat() {
   fs.rmSync(d, { recursive: true, force: true });
 }
 
+// Varios agentes: cada uno recibe SU parte y sabe qué hacen los demás (no la petición entera a todos)
+async function reparto() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'faisp-smoke-'));
+  let f = await instance(4399, d); f.stop(); await sleep(400);
+  demoConfig(path.join(d, 'config.json'));
+  f = await instance(4399, d);
+  const p = await f.api('POST', '/api/projects', { name: 'mod', path: '' });
+  const c = await f.api('POST', '/api/chats', { projectId: p.id });
+  const evs = await f.sse(`/api/chats/${c.id}/send`, { text: 'Haz el modelo 3D de un trineo en blockbench y escribe el lore de su historia', agentId: 'auto', attachments: [], mode: '', effort: '' });
+  const plan = evs.find((e) => e.ev === 'plan')?.data?.steps || [];
+  check(plan.length >= 2, `el plan reparte entre ${plan.map((s) => s.agent).join(', ')}`);
+  const done = evs.find((e) => e.ev === 'done')?.data?.message;
+  const texts = (done?.steps || []).map((s) => s.text);
+  check(texts.length >= 2 && texts.every((t) => t.includes('Tu parte')), 'cada agente recibe «Tu parte»');
+  check(texts.length >= 2 && texts.every((t) => t.includes('Encárgate SOLO')), 'con la petición repetida, a cada uno se le pide solo lo de su especialidad');
+  check(new Set(texts.map((t) => (/especialidad \(([^)]*)\)/.exec(t) || [])[1])).size === texts.length, 'cada agente ve una especialidad distinta');
+  f.stop(); await sleep(300);
+  fs.rmSync(d, { recursive: true, force: true });
+}
+
 if (!fs.existsSync(exe)) { bad('no existe ' + exe + ' (compila con cargo build)'); process.exit(1); }
 try {
   if (scenario === 'agentes' || scenario === 'todo') await agentes();
   if (scenario === 'chat' || scenario === 'todo') await chat();
+  if (scenario === 'reparto' || scenario === 'todo') await reparto();
 } catch (e) { bad('excepción: ' + e.message); }
 console.log(`[smoke] ${fails ? fails + ' fallo(s)' : 'todo bien'}`);
 process.exit(fails ? 1 : 0);

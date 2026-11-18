@@ -717,7 +717,12 @@ function setupSpell(ta, mirror) {
   if (ta.value.trim()) check();
 }
 
-function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 280) + 'px'; }
+function autosize(ta) {
+  // Vacío: altura natural de una línea (antes, una medida en mal momento lo dejaba enorme)
+  if (!ta.value) { ta.style.height = ''; return; }
+  ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 280) + 'px';
+  if (!ta._ro && window.ResizeObserver) { let w = ta.clientWidth; ta._ro = new ResizeObserver(() => { if (ta.clientWidth !== w) { w = ta.clientWidth; autosize(ta); } }); ta._ro.observe(ta); }
+}
 function renderAttachments(root = document) {
   const el = $('#attList', root); if (!el) return;
   el.innerHTML = S.attachments.map((f, i) => attChip(f, true, i)).join('');
@@ -810,7 +815,7 @@ async function streamChat(chatId, open, startedAt) {
   let single = false, outChars = 0, lastAt = Date.now(), lastKind = '', verb = 'Pensando', fr = 0;
   const t0 = startedAt ? new Date(startedAt).getTime() : Date.now();
   const who = s => (single || !s ? '' : s.name + ': ');
-  const setVerb = (v, kind) => { verb = v; lastKind = kind || ''; lastAt = Date.now(); };
+  const setVerb = (v, kind, s) => { verb = v; lastKind = kind || ''; lastAt = Date.now(); if (s) { s.verb = single ? v : v.slice(who(s).length); s.vAt = Date.now(); } };
   const seg = (s, kind) => {
     let last = s.segs[s.segs.length - 1];
     if (!last || last.kind !== kind) {
@@ -827,6 +832,13 @@ async function streamChat(chatId, open, startedAt) {
   const fmtEl = ms => { const x = Math.max(0, Math.floor(ms / 1000)); return x < 60 ? x + ' s' : Math.floor(x / 60) + ' min ' + String(x % 60).padStart(2, '0') + ' s'; };
   const flush = () => {
     for (const s of Object.values(steps)) for (const g of s.segs) if (g.dirty && g.kind === 'text') { g.el.innerHTML = md(g.text); g.dirty = false; }
+    if (!single) for (const s of Object.values(steps)) {
+      const cv = $('.card-verb', s.el); if (!cv) continue;
+      if (s.done) { cv.innerHTML = `${ico('tick', 12)} terminado`; continue; }
+      const sec = Math.floor((Date.now() - s.t0) / 1000);
+      cv.textContent = `${SPIN_FR[fr % SPIN_FR.length]} ${(s.verb || 'Pensando').replace(/…$/, '')}… · ${sec < 60 ? sec + ' s' : Math.floor(sec / 60) + ' min'}`;
+      if (s.stick) { const b = $('.step-body', s.el); if (b) b.scrollTop = b.scrollHeight; }
+    }
     for (const s of Object.values(steps)) for (const g of s.segs) if (g.kind === 'tools' && g.el.classList.contains('on')) {
       const sp = $('.act-spin', g.el); if (sp) sp.textContent = SPIN_FR[fr % SPIN_FR.length];
       const tm = $('.act-time', g.el); const ms = Date.now() - (g.t0 || Date.now()); if (tm) tm.textContent = ms > 1500 ? fmtEl(ms) : '';
@@ -903,13 +915,20 @@ async function streamChat(chatId, open, startedAt) {
       $('#liveStatus', live)?.insertAdjacentHTML('beforebegin', html);
       const el = $(`[data-step="${CSS.escape(d.stepId)}"]`, live);
       $('.meta', el).insertAdjacentHTML('afterbegin', `<span class="dot run"></span>${d.effort ? `<span class="chip effchip" title="Esfuerzo de este paso">${esc(EFFORT_NAMES[d.effort] || d.effort)}</span>` : ''}<span title="Contexto estimado enviado">~${fmtTok(d.context?.estTokens || 0)} ctx</span>`);
-      steps[d.stepId] = { el, segs: [], changes: [], name: agentById(d.agent)?.name || d.agent, done: false };
-      setVerb(who(steps[d.stepId]) + 'Pensando', 'status');
+      steps[d.stepId] = { el, segs: [], changes: [], name: agentById(d.agent)?.name || d.agent, done: false, stick: true, t0: Date.now() };
+      if (!single) {
+        // Varios agentes a la vez: cada uno en su tarjeta, con su estado y su propio desplazamiento
+        el.classList.add('live-card');
+        $('.step-head .name', el)?.insertAdjacentHTML('afterend', '<span class="card-verb"></span>');
+        const body = $('.step-body', el), sx = steps[d.stepId];
+        body.addEventListener('scroll', () => { sx.stick = body.scrollHeight - body.scrollTop - body.clientHeight < 30; }, { passive: true });
+      }
+      setVerb(who(steps[d.stepId]) + 'Pensando', 'status', steps[d.stepId]);
       if (document.body.classList.contains('panel-open') && (S.panelTab === 'board' || S.panelTab === 'plan')) renderPanel();
     } else if (ev === 'delta') {
       const s = steps[d.stepId]; if (!s) return;
       const g = seg(s, 'text'); g.text += d.text; g.dirty = true; outChars += d.text.length;
-      setVerb(who(s) + 'Escribiendo', 'text');
+      setVerb(who(s) + 'Escribiendo', 'text', s);
     } else if (ev === 'tool') {
       const s = steps[d.stepId]; if (!s) return;
       const it = toolInfo(d.name, d.input);
@@ -919,14 +938,14 @@ async function streamChat(chatId, open, startedAt) {
           if (!s.todoEl) { s.todoEl = document.createElement('div'); $('.flow', s.el).appendChild(s.todoEl); s.segs.forEach(g => g.el.classList.remove('on')); s.segs.push({ kind: 'todo', el: s.todoEl }); }
           s.todoEl.innerHTML = todoHtml(todos);
           const cur = todos.find(t => t.status === 'in_progress');
-          setVerb(who(s) + (cur ? (cur.activeForm || cur.content) : 'Organizando tareas'), 'tool');
+          setVerb(who(s) + (cur ? (cur.activeForm || cur.content) : 'Organizando tareas'), 'tool', s);
           return;
         }
       }
       const g = seg(s, 'tools'); g.items.push(it); g.t0 = Date.now(); drawAct(s, g);
       const fileVerb = ['read', 'edit', 'write'].includes(it.k) && it.arg ? ' ' + fileName(it.arg) : '';
       const extra = it.k === 'other' ? ' ' + it.label : it.k === 'cmd' && it.arg ? ': ' + it.arg.slice(0, 60) : fileVerb;
-      setVerb(who(s) + ACT_VERB[it.k] + extra, 'tool');
+      setVerb(who(s) + ACT_VERB[it.k] + extra, 'tool', s);
     } else if (ev === 'artifact') {
       const s = steps[d.stepId]; if (!s) return;
       let box = $('.art-chips', s.el); if (!box) { $('.step-body', s.el).insertAdjacentHTML('beforeend', '<div class="art-chips"></div>'); box = $('.art-chips', s.el); }
@@ -935,6 +954,7 @@ async function streamChat(chatId, open, startedAt) {
     } else if (ev === 'step_done') {
       const s = steps[d.stepId]; if (!s) return;
       s.done = true; s.segs.forEach(g => g.el.classList.remove('on')); setPs(d.stepId, 'completed');
+      if (!single) { s.el.classList.remove('live-card'); if (Object.values(steps).some(x => !x.done)) s.el.classList.add('closed'); }
       const meta = $('.meta', s.el); $('.dot', meta)?.remove(); S.planStatus[d.stepId] = 'done';
       const mc = $('.model', s.el); if (mc && d.model) mc.textContent = d.model;
       if (d.fallbacks?.length) $('.tools', s.el).insertAdjacentHTML('afterbegin', `<div class="tool-row" title="${esc(d.fallbacks.join('\n'))}">${ico('refresh', 13)} <b>respaldo</b> ${d.fallbacks.length} modelo(s) fallaron; se usó ${esc(d.model)}</div>`);
@@ -1546,12 +1566,86 @@ document.addEventListener('click', async e => {
   const gch = e.target.closest('[data-goch]');
   if (gch) { document.getElementById('ch-' + gch.dataset.goch)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
   const zm = e.target.closest('[data-zoom]');
-  if (zm) { const o = document.createElement('div'); o.className = 'overlay lightbox'; o.innerHTML = `<img src="/api/file?path=${encodeURIComponent(zm.dataset.zoom)}" alt="">`; o.onclick = () => o.remove(); document.body.appendChild(o); return; }
+  if (zm) {
+    // Todas las imágenes del mismo mensaje (o del panel), en orden, para moverse entre ellas
+    const scope = zm.closest('.msg-ai, .msg-user, .panel-body, #attList, .fv-body') || document;
+    const seen = new Set(), list = [];
+    for (const el of scope.querySelectorAll('[data-zoom]')) { const p = el.dataset.zoom; if (seen.has(p)) continue; seen.add(p); list.push({ src: '/api/file?path=' + encodeURIComponent(p), name: fileName(p), p }); }
+    openGallery(list, list.findIndex(x => x.p === zm.dataset.zoom));
+    return;
+  }
   const ap = e.target.closest('[data-allow]');
   if (ap) { const card = ap.closest('[data-ap]'); $$('button', card).forEach(x => x.disabled = true); api('POST', `/api/approvals/${encodeURIComponent(card.dataset.ap)}`, { allow: ap.dataset.allow === '1' }).catch(err => toast(err.message)); return; }
   const art = e.target.closest('[data-art]');
   if (art) openArtifact(art.dataset.art);
 });
+
+// ---------- Visor de imágenes: galería con flechas, zoom (rueda, doble clic, pellizco) y arrastre ----------
+function openGallery(items, start = 0) {
+  if (!items.length) return;
+  document.querySelector('.gal')?.remove();
+  let i = Math.max(0, Math.min(start, items.length - 1)), s = 1, tx = 0, ty = 0;
+  const o = document.createElement('div'); o.className = 'gal';
+  o.innerHTML = `<div class="gal-top"><span class="gal-name"></span><span style="flex:1"></span><button class="gal-b" data-g="out" title="Alejar (−)">−</button><span class="gal-z">100 %</span><button class="gal-b" data-g="in" title="Acercar (+)">+</button><button class="gal-b" data-g="fit" title="Ajustar (0)">Ajustar</button><button class="gal-b" data-g="x" title="Cerrar (Esc)">✕</button></div>
+    <div class="gal-stage"><img class="gal-img" alt="" draggable="false"></div>
+    <button class="gal-nav prev" data-g="prev" aria-label="Anterior">‹</button><button class="gal-nav next" data-g="next" aria-label="Siguiente">›</button>
+    <div class="gal-bot"><span class="gal-count"></span></div>`;
+  document.body.appendChild(o);
+  const img = o.querySelector('.gal-img'), stage = o.querySelector('.gal-stage');
+  const apply = () => { img.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`; o.querySelector('.gal-z').textContent = Math.round(s * 100) + ' %'; stage.classList.toggle('zoomed', s > 1); };
+  const reset = () => { s = 1; tx = 0; ty = 0; apply(); };
+  const show = n => {
+    i = (n + items.length) % items.length; reset();
+    img.src = items[i].src; o.querySelector('.gal-name').textContent = items[i].name || '';
+    o.querySelector('.gal-count').textContent = `${i + 1} de ${items.length}`;
+    o.querySelectorAll('.gal-nav').forEach(b => b.style.display = items.length > 1 ? '' : 'none');
+  };
+  // Acercar manteniendo quieto el punto bajo el cursor
+  const zoomAt = (ns, cx, cy) => {
+    ns = Math.max(1, Math.min(8, ns));
+    const r = stage.getBoundingClientRect(); const px = cx - r.left - r.width / 2, py = cy - r.top - r.height / 2;
+    tx = px - (px - tx) * (ns / s); ty = py - (py - ty) * (ns / s); s = ns;
+    if (s === 1) { tx = 0; ty = 0; }
+    apply();
+  };
+  const center = () => { const r = stage.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+  const close = () => { o.remove(); document.removeEventListener('keydown', key, true); };
+  const key = e => {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowRight') show(i + 1);
+    else if (e.key === 'ArrowLeft') show(i - 1);
+    else if (e.key === '+' || e.key === '=') zoomAt(s * 1.25, ...center());
+    else if (e.key === '-') zoomAt(s / 1.25, ...center());
+    else if (e.key === '0') reset();
+    else return;
+    e.preventDefault(); e.stopPropagation();
+  };
+  document.addEventListener('keydown', key, true);
+  o.addEventListener('click', e => {
+    const g = e.target.closest('[data-g]')?.dataset.g;
+    if (g === 'x') close(); else if (g === 'next') show(i + 1); else if (g === 'prev') show(i - 1);
+    else if (g === 'in') zoomAt(s * 1.25, ...center()); else if (g === 'out') zoomAt(s / 1.25, ...center()); else if (g === 'fit') reset();
+    else if (e.target === stage && s === 1 && !moved) close();
+  });
+  stage.addEventListener('wheel', e => { e.preventDefault(); zoomAt(s * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY); }, { passive: false });
+  img.addEventListener('dblclick', e => { s > 1 ? reset() : zoomAt(2.5, e.clientX, e.clientY); });
+  // Arrastrar (con zoom) o deslizar (sin zoom) y pellizcar con dos dedos
+  const pts = new Map(); let last = null, moved = false, pinch = null, swipe0 = null;
+  stage.addEventListener('pointerdown', e => { stage.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); moved = false; last = [e.clientX, e.clientY]; swipe0 = e.clientX; if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), s }; } });
+  stage.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pts.size === 2 && pinch) { const [a, b] = [...pts.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]); zoomAt(pinch.s * d / pinch.d, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2); moved = true; return; }
+    if (s > 1 && last) { tx += e.clientX - last[0]; ty += e.clientY - last[1]; apply(); }
+    if (last && Math.hypot(e.clientX - last[0], e.clientY - last[1]) > 2) moved = true;
+    last = [e.clientX, e.clientY];
+  });
+  const up = e => {
+    if (pts.size === 1 && s === 1 && swipe0 !== null && Math.abs(e.clientX - swipe0) > 60) show(i + (e.clientX < swipe0 ? 1 : -1));
+    pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) { last = null; swipe0 = null; setTimeout(() => { moved = false; }, 0); }
+  };
+  stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', up);
+  show(i);
+}
 
 // ---------- Acciones de mensajes (como en Claude) ----------
 function msgText(m) { return m.role === 'user' ? m.content : (m.steps?.length ? m.steps.map(s => s.text).join('\n\n') : m.content); }

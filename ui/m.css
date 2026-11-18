@@ -147,3 +147,20 @@ svg { display: block; }
 .cut { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; padding: 10px 12px; border: 1px solid rgba(245,165,36,.5); background: rgba(245,165,36,.08); border-radius: 12px; font-size: 14px; }
 .cut span { color: var(--muted); font-size: 13px; } .cut button { align-self: flex-start; margin-top: 4px; border: 1px solid var(--line2); border-radius: 999px; padding: 5px 12px; font-size: 13.5px; }
 .ths { display: flex; gap: 6px; margin: 4px 0; } .th { width: 92px; height: 58px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line2); }
+
+/* visor de imágenes */
+.gal { position: fixed; inset: 0; z-index: 90; background: rgba(10,10,12,.94); display: flex; flex-direction: column; color: #eee; user-select: none; }
+.gal-top { display: flex; align-items: center; gap: 6px; padding: 10px 14px; font-size: 13.5px; }
+.gal-name { font-family: var(--mono); opacity: .85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gal-b { border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: #eee; border-radius: 8px; padding: 4px 10px; font: inherit; cursor: pointer; min-width: 34px; }
+.gal-b:hover { background: rgba(255,255,255,.14); }
+.gal-z { min-width: 54px; text-align: center; opacity: .8; font-variant-numeric: tabular-nums; }
+.gal-stage { flex: 1; position: relative; overflow: hidden; display: grid; place-items: center; touch-action: none; cursor: zoom-in; }
+.gal-stage.zoomed { cursor: grab; } .gal-stage.zoomed:active { cursor: grabbing; }
+.gal-img { max-width: 94vw; max-height: calc(100vh - 120px); transform-origin: center; transition: transform .06s linear; border-radius: 6px; image-rendering: auto; }
+.gal-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 46px; height: 46px; border-radius: 50%; border: 1px solid rgba(255,255,255,.18); background: rgba(30,30,34,.75); color: #fff; font-size: 26px; line-height: 1; cursor: pointer; }
+.gal-nav:hover { background: rgba(60,60,66,.9); }
+.gal-nav.prev { left: 16px; } .gal-nav.next { right: 16px; }
+.gal-bot { display: flex; justify-content: center; padding: 10px 0 14px; font-size: 14px; opacity: .9; }
+
+.gal-top { padding-top: calc(env(safe-area-inset-top) + 8px); } .gal-bot { padding-bottom: calc(env(safe-area-inset-bottom) + 12px); } .gal-nav { display: none; }

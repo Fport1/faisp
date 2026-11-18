@@ -419,7 +419,7 @@ async fn llm_plan(st: &Arc<AppState>, project: &Option<Project>, chat: &Chat, te
         (if s.is_empty() { "(ninguna)".into() } else { s }, if c.is_empty() { "(ninguno)".into() } else { c })
     };
     let stable = format!(
-        "{}\n\n## Equipo disponible\n{}\n\n## Skills (instrucciones extra que puedes adjuntar a un paso)\n{}\n\n## Conectores (fuentes de contexto externas)\n{}\n\n## Cómo respondes\nDevuelve SOLO un objeto JSON, sin texto alrededor:\n{{\"reply\": null, \"steps\": [{{\"id\":\"s1\",\"agent\":\"<id>\",\"task\":\"<instrucción concreta y autocontenida>\",\"effort\":\"low|medium|high|xhigh\",\"dependsOn\":[],\"files\":[],\"skills\":[],\"connectors\":[]}}]}}\nReglas:\n- Usa el MÍNIMO de pasos (casi siempre 1; máximo 4). Cada agente solo hace lo suyo.\n- Modelos 3D → \"modelos\"; textos/lore → \"narrativa\"; diseño de contenido → \"contenido\"; código → \"codigo\"; revisión → \"revisor\".\n- CREAR voces, diálogos hablados, sonidos o música → \"audio\" (ElevenLabs). ANALIZAR vídeos, audios o imágenes existentes → \"multimedia\" (Gemini).\n- Si un paso necesita el resultado de otro, ponlo en dependsOn. Los pasos sin dependencias corren en paralelo.\n- \"files\": hasta 5 archivos del proyecto imprescindibles, elegidos del árbol (los agentes además pueden explorar con herramientas).\n- \"effort\" por paso, el mínimo que baste: low = respuestas cortas, preguntas simples, textos breves o cambios triviales; medium = tareas normales; high = código no trivial, diseño o análisis; xhigh = solo arquitectura, depuración difícil o refactors grandes.\n- Si es un saludo o una pregunta trivial que puedes contestar en 1-3 frases, ponla en \"reply\" y \"steps\": [].",
+        "{}\n\n## Equipo disponible\n{}\n\n## Skills (instrucciones extra que puedes adjuntar a un paso)\n{}\n\n## Conectores (fuentes de contexto externas)\n{}\n\n## Cómo respondes\nDevuelve SOLO un objeto JSON, sin texto alrededor:\n{{\"reply\": null, \"steps\": [{{\"id\":\"s1\",\"agent\":\"<id>\",\"task\":\"<instrucción concreta y autocontenida>\",\"effort\":\"low|medium|high|xhigh\",\"dependsOn\":[],\"files\":[],\"skills\":[],\"connectors\":[]}}]}}\nReglas:\n- Usa el MÍNIMO de pasos (casi siempre 1; máximo 4). Cada agente solo hace lo suyo.\n- Cada \"task\" es la PARTE de ese agente, distinta de las demás: qué tiene que hacer y qué entregar. Nunca copies la petición entera en varios pasos ni le pidas a un agente algo que no es de su especialidad.\n- Modelos 3D → \"modelos\"; textos/lore → \"narrativa\"; diseño de contenido → \"contenido\"; código → \"codigo\"; revisión → \"revisor\".\n- CREAR voces, diálogos hablados, sonidos o música → \"audio\" (ElevenLabs). ANALIZAR vídeos, audios o imágenes existentes → \"multimedia\" (Gemini).\n- Si un paso necesita el resultado de otro, ponlo en dependsOn. Los pasos sin dependencias corren en paralelo.\n- \"files\": hasta 5 archivos del proyecto imprescindibles, elegidos del árbol (los agentes además pueden explorar con herramientas).\n- \"effort\" por paso, el mínimo que baste: low = respuestas cortas, preguntas simples, textos breves o cambios triviales; medium = tareas normales; high = código no trivial, diseño o análisis; xhigh = solo arquitectura, depuración difícil o refactors grandes.\n- Si es un saludo o una pregunta trivial que puedes contestar en 1-3 frases, ponla en \"reply\" y \"steps\": [].",
         orch.system, team_text(&agents), skills_list, conn_list
     );
     let tree = project.as_ref().filter(|p| !p.path.is_empty()).map(|p| compact_tree(&project_tree(std::path::Path::new(&p.path), 600), 60)).unwrap_or_default();
@@ -943,7 +943,7 @@ async fn elevenlabs_tool(st: &Arc<AppState>, tx: &Tx, step_id: &str, mode: &str,
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat: Chat, original: String, deps: Vec<(String, String, String)>, tx: Tx, ctx: RunCtx) -> StepResult {
+async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat: Chat, original: String, deps: Vec<(String, String, String)>, tx: Tx, ctx: RunCtx, team: Vec<(String, String, String)>) -> StepResult {
     let Some(agent) = st.agent(&step.agent) else {
         return StepResult { id: step.id, agent_id: step.agent, text: "Agente no encontrado".into(), error: true, ..Default::default() };
     };
@@ -1126,7 +1126,16 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     while msgs.first().map(|m| m.0 != "user").unwrap_or(false) {
         msgs.remove(0);
     }
-    let task = if step.task == original { step.task.clone() } else { format!("{}\n\n(Petición original del usuario: {original})", step.task) };
+    // Cada agente sabe cuál es SU parte y qué hacen los demás (antes todos recibían la petición entera y alguno
+    // respondía «esto no me toca»)
+    let others: Vec<&(String, String, String)> = team.iter().filter(|(id, _, _)| id != &step.id).collect();
+    let task = if others.is_empty() {
+        if step.task == original { step.task.clone() } else { format!("{}\n\n(Petición original del usuario, como contexto: {original})", step.task) }
+    } else {
+        let mine = if step.task == original { format!("Encárgate SOLO de lo que corresponde a tu especialidad ({}) dentro de esta petición:\n{original}", agent.description) } else { step.task.clone() };
+        let rest = others.iter().map(|(_, name, t)| format!("- {name}: {}", truncate(if t == &original { "lo de su especialidad" } else { t }, 300))).collect::<Vec<_>>().join("\n");
+        format!("## Tu parte (haz solo esto)\n{mine}\n\n## Lo que hacen los demás agentes a la vez (no lo hagas tú ni digas que no te toca: céntrate en tu parte)\n{rest}\n\n## Petición original del usuario (solo como contexto)\n{}", truncate(&original, 2000))
+    };
     match msgs.last_mut() {
         Some(last) if last.0 == "user" => {
             last.1.push_str("\n\n");
@@ -1335,6 +1344,7 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
         let mut outputs: HashMap<String, StepResult> = HashMap::new();
         let mut pending = steps.clone();
         let ids: Vec<String> = steps.iter().map(|s| s.id.clone()).collect();
+        let team_plan: Vec<(String, String, String)> = steps.iter().map(|s| (s.id.clone(), st.agent(&s.agent).map(|a| a.name).unwrap_or_else(|| s.agent.clone()), s.task.clone())).collect();
         while !pending.is_empty() {
             let (ready, rest): (Vec<Step>, Vec<Step>) = pending.into_iter().partition(|s| s.depends_on.iter().all(|d| outputs.contains_key(d) || !ids.contains(d)));
             let (wave, rest) = if ready.is_empty() {
@@ -1347,7 +1357,7 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
             pending = rest;
             let handles: Vec<tokio::task::JoinHandle<StepResult>> = wave.iter().map(|s| {
                 let deps: Vec<(String, String, String)> = s.depends_on.iter().filter_map(|d| outputs.get(d).map(|o| (d.clone(), o.agent_name.clone(), o.text.clone()))).collect();
-                tokio::spawn(run_step(st.clone(), s.clone(), project.clone(), chat.clone(), text.clone(), deps, tx.clone(), ctx.clone()))
+                tokio::spawn(run_step(st.clone(), s.clone(), project.clone(), chat.clone(), text.clone(), deps, tx.clone(), ctx.clone(), team_plan.clone()))
             }).collect();
             let aborts: Vec<tokio::task::AbortHandle> = handles.iter().map(|h| h.abort_handle()).collect();
             let results = tokio::select! {
