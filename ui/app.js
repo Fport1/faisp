@@ -390,6 +390,7 @@ function renderChat() {
   $('#composerWrap').insertAdjacentHTML('afterbegin', `<button class="jump" id="jumpBtn" title="Ir al final">${ico('chevron', 16)}</button>`);
   wireScroll(v);
   if (S.streaming && S.streamChatId === S.chatId && S.liveEl) $('#thread').appendChild(S.liveEl);
+  setTimeout(fillModelThumbs, 50);
   $('#composerWrap').appendChild(composer());
   drawLimitBanner();
   $('#composerWrap').insertAdjacentHTML('beforeend', '<div class="hint">El orquestador reparte la tarea entre agentes. Revisa los cambios antes de aplicarlos.</div>');
@@ -449,7 +450,7 @@ function renderStep(s, single, open = true) {
   const has = s.text || s.timeline?.length || s.tools?.length;
   return `<div class="step ${single ? 'single' : ''} ${open ? '' : 'closed'}" data-step="${esc(s.id)}">
     <div class="step-head">${agentBadge(s.agentId, s.model)}<span class="meta">${s.effort ? `<span class="chip effchip">${esc(EFFORT_NAMES[s.effort] || s.effort)}</span>` : ''}${usageMeta(s.usage)}${single ? '' : '<span class="caret">' + ico('chevron', 14) + '</span>'}</span></div>
-    <div class="step-body">${!single && s.task ? `<div class="step-task">${esc(s.task.slice(0, 400))}</div>` : ''}<div class="tools"></div><div class="flow">${has ? stepFlow(s) : ''}</div>${arts ? `<div class="art-chips">${arts}</div>` : ''}</div></div>`;
+    <div class="step-body">${!single && s.task ? `<div class="step-task">${esc(s.task.slice(0, 400))}</div>` : ''}<div class="tools"></div><div class="flow">${has ? stepFlow(s) : ''}</div>${s.incomplete ? incompleteHtml(s.incomplete) : ''}${arts ? `<div class="art-chips">${arts}</div>` : ''}</div></div>`;
 }
 
 const EFFORT_NAMES = { low: 'bajo', medium: 'medio', high: 'alto', xhigh: 'muy alto', max: 'máximo' };
@@ -486,7 +487,7 @@ function renderMessage(m) {
   const steps = m.steps || [];
   if (!steps.length) return `${chapterMark(m)}<div class="msg-ai" data-msg="${esc(m.id || '')}"><div class="step single"><div class="step-head">${agentBadge('orquestador')}<span class="meta">${usageMeta(m.planUsage)}</span></div><div class="md">${md(m.content)}</div></div>${msgActions(m)}</div>`;
   const plan = steps.length > 1 ? `<div class="plan-line">Plan: ${steps.map(s => `${agentIcon(agentById(s.agentId), 14)} ${esc(s.agentName)}`).join(' <span class="arrow">→</span> ')}${m.planUsage ? ` · <span title="Planificación">${usageMeta(m.planUsage)}</span>` : ''}</div>` : '';
-  return `${chapterMark(m)}<div class="msg-ai" data-msg="${esc(m.id || '')}">${plan}${steps.map(s => renderStep(s, steps.length === 1, true)).join('')}${changesCard(steps)}${msgActions(m)}</div>`;
+  return `${chapterMark(m)}<div class="msg-ai" data-msg="${esc(m.id || '')}">${plan}${steps.map(s => renderStep(s, steps.length === 1, true)).join('')}${m.summary ? `<div class="final-sum md">${md(m.summary)}</div>` : ''}${changesCard(steps)}${msgActions(m)}</div>`;
 }
 
 function composer() {
@@ -815,14 +816,14 @@ async function streamChat(chatId, open, startedAt) {
     if (!last || last.kind !== kind) {
       const el = document.createElement('div');
       if (kind === 'text') el.className = 'md seg';
-      else { el.className = 'act on'; el.innerHTML = '<button class="act-sum"></button><div class="act-list"></div>'; }
+      else { el.className = 'act on'; el.innerHTML = '<div class="act-row"><button class="act-sum"></button><span class="act-thumbs"></span></div><div class="act-list"></div>'; }
       $('.flow', s.el).appendChild(el);
       s.segs.forEach(g => g.el.classList.remove('on'));
       last = { kind, el, text: '', items: [], dirty: true }; s.segs.push(last);
     }
     return last;
   };
-  const drawAct = (s, g) => { $('.act-sum', g.el).innerHTML = `<span class="act-spin"></span>${actSummary(g.items, s.changes)} <span class="act-time"></span><span class="chev">${ico('chevron', 13)}</span>`; $('.act-list', g.el).innerHTML = g.items.map(actItem).join(''); };
+  const drawAct = (s, g) => { $('.act-sum', g.el).innerHTML = `<span class="act-spin"></span>${actSummary(g.items, s.changes)} <span class="act-time"></span><span class="chev">${ico('chevron', 13)}</span>`; $('.act-thumbs', g.el).innerHTML = actThumbs(g.items); $('.act-list', g.el).innerHTML = g.items.map(actItem).join(''); fillModelThumbs(); };
   const fmtEl = ms => { const x = Math.max(0, Math.floor(ms / 1000)); return x < 60 ? x + ' s' : Math.floor(x / 60) + ' min ' + String(x % 60).padStart(2, '0') + ' s'; };
   const flush = () => {
     for (const s of Object.values(steps)) for (const g of s.segs) if (g.dirty && g.kind === 'text') { g.el.innerHTML = md(g.text); g.dirty = false; }
@@ -887,6 +888,7 @@ async function streamChat(chatId, open, startedAt) {
       if (c) { c.added += d.added; c.removed += d.removed; c.applied = c.applied || d.applied; } else s.changes.push({ path: d.path, added: d.added, removed: d.removed, applied: d.applied });
       s.segs.filter(g => g.kind === 'tools').forEach(g => drawAct(s, g));
       studioMaybeReload(d.path);
+      modelThumbCache.delete(relPath(d.path));
     } else if (ev === 'stopped') setVerb('Deteniendo', 'status');
     else if (ev === 'paused') { live.insertAdjacentHTML('beforeend', `<div class="limit-note">${ico('clock', 13)}<span>Límite de Claude agotado · seguirá solo a las ${new Date(d.resumeAt * 1000).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span></div>`); }
     else if (ev === 'plan') {
@@ -937,6 +939,7 @@ async function streamChat(chatId, open, startedAt) {
       const mc = $('.model', s.el); if (mc && d.model) mc.textContent = d.model;
       if (d.fallbacks?.length) $('.tools', s.el).insertAdjacentHTML('afterbegin', `<div class="tool-row" title="${esc(d.fallbacks.join('\n'))}">${ico('refresh', 13)} <b>respaldo</b> ${d.fallbacks.length} modelo(s) fallaron; se usó ${esc(d.model)}</div>`);
       meta.insertAdjacentHTML('afterbegin', usageMeta(d.usage));
+      refreshLimitsCache();
       if (!single) setVerb('Siguiente paso', 'status');
     } else if (ev === 'step_error') { const s = steps[d.stepId]; if (s) { const g = seg(s, 'text'); g.text += `\n\n> Error: ${d.error}`; g.dirty = true; } }
     else if (ev === 'approval') {
@@ -950,6 +953,8 @@ async function streamChat(chatId, open, startedAt) {
       if (el) el.outerHTML = `<div class="tool-row">${ico(d.allowed ? 'tick' : 'x', 13)} <b>${d.allowed ? 'Permitido' : 'Denegado'}</b></div>`;
       setVerb('Continuando', 'status');
     }
+    else if (ev === 'incomplete') { const s = steps[d.stepId]; (s ? $('.step-body', s.el) : live).insertAdjacentHTML('beforeend', incompleteHtml(d.reason)); }
+    else if (ev === 'summary') { $('#liveStatus', live)?.insertAdjacentHTML('beforebegin', `<div class="final-sum md">${md(d.text)}</div>`); }
     else if (ev === 'error') { $('#liveStatus', live)?.remove(); live.insertAdjacentHTML('beforeend', `<div class="err">${ico('alert', 14)} ${esc(d.error)}</div>`); }
     else if (ev === 'done') $('#liveStatus', live)?.remove();
   }
@@ -1017,7 +1022,46 @@ function actItem(i) {
   return `<div class="act-item ${file ? 'click' : ''}" ${file ? `data-file="${esc(i.arg)}" data-fk="${i.k}"` : ''}><span class="k">${esc(i.k === 'other' ? 'Herramienta' : i.label)}</span><span class="a" title="${esc(i.arg)}">${esc(file ? relPath(i.arg) : i.k === 'other' ? i.label : i.arg)}</span></div>`;
 }
 function actHtml(items, changes) {
-  return `<div class="act"><button class="act-sum">${actSummary(items, changes)} <span class="chev">${ico('chevron', 13)}</span></button><div class="act-list">${items.map(actItem).join('')}</div></div>`;
+  return `<div class="act"><div class="act-row"><button class="act-sum">${actSummary(items, changes)} <span class="chev">${ico('chevron', 13)}</span></button><span class="act-thumbs">${actThumbs(items)}</span></div><div class="act-list">${items.map(actItem).join('')}</div></div>`;
+}
+// Miniaturas de lo que miró o tocó el agente: capturas e imágenes, y modelos 3D (como en Claude Code)
+const THUMB_IMG = /\.(png|jpe?g|webp|gif|bmp)$/i;
+function absFor(p) { const pr = project(); if (!p) return ''; return pr?.path ? absOf(pr, String(p)) : String(p); }
+function actThumbs(items) {
+  const seen = new Set(), out = [];
+  for (const i of items) {
+    const p = i.arg; if (!p || seen.has(p) || !['read', 'edit', 'write', 'media'].includes(i.k)) continue;
+    if (THUMB_IMG.test(p)) { seen.add(p); const a = absFor(p); out.push(`<img class="athumb" src="/api/file?path=${encodeURIComponent(a)}" data-zoom="${esc(a)}" title="${esc(relPath(p))}" alt="" loading="lazy" onerror="this.remove()">`); }
+    else if (typeof isModelFile === 'function' && isModelFile(p) && i.k !== 'read') { seen.add(p); out.push(`<img class="athumb mthumb" data-mthumb="${esc(relPath(p))}" title="Ver ${esc(fileName(p))} en el Estudio" alt="">`); }
+  }
+  return out.slice(-4).join('');
+}
+// Las miniaturas de modelos se hacen de una en una con un visor oculto (y se guardan)
+const modelThumbCache = new Map(); let thumbBusy = false;
+async function fillModelThumbs() {
+  if (thumbBusy) return; thumbBusy = true;
+  try {
+    for (;;) {
+      const img = document.querySelector('img[data-mthumb]:not([src])'); if (!img) break;
+      const rel = img.dataset.mthumb, p = project();
+      if (!modelThumbCache.has(rel) && p?.path) {
+        await studioReady();
+        const box = document.createElement('div'); box.style.cssText = 'position:fixed;left:-2000px;top:0;width:240px;height:180px'; document.body.appendChild(box);
+        const assetUrl = (kind, ref) => `/api/projects/${p.id}/asset?kind=${kind}&ref=${encodeURIComponent(ref)}`;
+        let url = '';
+        try {
+          const ctl = window.Studio.open(box, { url: '/api/file?path=' + encodeURIComponent(absOf(p, rel)) + '&t=' + Date.now(), name: rel, loadParent: async r => { const x = await fetch(assetUrl('models', r)); return x.ok ? x.json() : null; }, textureUrl: async r => assetUrl('textures', r) });
+          await Promise.race([ctl.ready, new Promise((_, rej) => setTimeout(() => rej(new Error('tiempo')), 8000))]);
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+          url = ctl.snapshot(); ctl.dispose();
+        } catch { url = ''; }
+        box.remove();
+        modelThumbCache.set(rel, url);
+      }
+      const u = modelThumbCache.get(rel);
+      document.querySelectorAll(`img[data-mthumb="${CSS.escape(rel)}"]:not([src])`).forEach(x => { if (u) x.src = u; else x.remove(); });
+    }
+  } finally { thumbBusy = false; }
 }
 function stepFlow(s) {
   let tl = s.timeline?.length && !s.error ? s.timeline : null;
@@ -1047,6 +1091,9 @@ function aggChanges(steps) {
 function changeRow(c) {
   const dir = c.path.split('/').slice(0, -1).join('/');
   return `<div class="cc-row" data-file="${esc(c.path)}" data-fk="edit" title="${esc(c.path)}">${ico('code', 14)}<span class="cc-name">${esc(fileName(c.path))}</span><span class="cc-dir">${esc(dir)}</span>${c.applied ? '' : '<span class="chip" style="font-size:10.5px">propuesta</span>'}<span style="flex:1"></span>${c.added ? `<span class="add">+${c.added}</span>` : ''}${c.removed ? `<span class="rem">−${c.removed}</span>` : ''}</div>`;
+}
+function incompleteHtml(reason) {
+  return `<div class="incomplete">${ico('alert', 15)}<div><b>Se detuvo antes de terminar</b><span>${esc(reason)}</span></div><button class="btn sm" data-continue>Continuar</button></div>`;
 }
 function changesCard(steps) {
   const list = aggChanges(steps); if (!list.length) return '';
@@ -1410,6 +1457,10 @@ function setupPop(ta, wrap) {
 }
 
 // ---------- Anillo de uso del plan (como en Claude) ----------
+async function refreshLimitsCache() {
+  try { const l = await api('GET', '/api/claude/limits'); if (l) { S.limits = l; drawUsageRing(); drawLimitBanner(); } } catch {}
+}
+setInterval(() => { if (document.visibilityState === 'visible') refreshLimitsCache(); }, 20000);
 function planWins() {
   const info = normLimits(S.limits?.info); if (!info) return null;
   const w = info.unifiedWindows || {};
@@ -1461,6 +1512,10 @@ function normLimits(info) {
 
 // Acciones delegadas: código, artefactos, pasos plegables
 document.addEventListener('click', async e => {
+  const cont = e.target.closest('[data-continue]');
+  if (cont) { if (S.streaming) return toast('Espera a que termine lo que está haciendo'); send('Continúa exactamente donde lo dejaste y termina con el mensaje final.'); return; }
+  const mth = e.target.closest('[data-mthumb]');
+  if (mth) { openStudio(mth.dataset.mthumb); return; }
   const asum = e.target.closest('.act-sum');
   if (asum) { asum.parentElement.classList.toggle('open'); return; }
   const fref = e.target.closest('[data-file]');
@@ -2149,9 +2204,9 @@ async function setUsage(body) {
     if (!alive()) return clearInterval(S.usageTimer);
     if (document.visibilityState !== 'visible') return;
     tick++;
-    const dd = await loadAll(); // cada 15 s: lo último registrado (sin gastar tokens)
-    if (dd && tick % 8 === 0 && S.st.providerReady.claude && stale(dd.claude)) refreshClaude(true); // cada 2 min: consulta mínima
-  }, 15000);
+    const dd = await loadAll(); // cada 5 s: lo último registrado (sin gastar tokens)
+    if (dd && tick % 24 === 0 && S.st.providerReady.claude && stale(dd.claude)) refreshClaude(true); // cada 2 min: consulta mínima
+  }, 5000);
 }
 
 function providerUsageCard(id, p) {

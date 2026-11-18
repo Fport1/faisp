@@ -315,7 +315,7 @@ export function open(el, opts) {
     get: k => state[k],
     frame: () => state.model && frame(state.model, '+z'),
     snapshot: () => { const bg = scene.background; scene.background = new THREE.Color(0x2b2b30); renderer.render(scene, camera); const u = renderer.domElement.toDataURL('image/png'); scene.background = bg; renderer.render(scene, camera); return u; },
-    dispose() { alive = false; ro.disconnect(); controls.dispose(); renderer.dispose(); renderer.domElement.remove(); },
+    dispose() { alive = false; ro.disconnect(); controls.dispose(); renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove(); },
   };
 }
 

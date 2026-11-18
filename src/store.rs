@@ -317,6 +317,8 @@ pub struct StepResult {
     pub changes: Vec<FileChange>,
     /// Texto y herramientas en el orden en que ocurrieron (para mostrarlo como Claude Code)
     pub timeline: Vec<serde_json::Value>,
+    /// Si el agente se cortó antes de terminar: por qué (límite de pasos, de uso, error…)
+    pub incomplete: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -332,6 +334,8 @@ pub struct Message {
     pub plan_usage: Option<UsageRow>,
     pub mode: String,
     pub effort: String,
+    /// Mensaje final del orquestador cuando trabajaron varios agentes
+    pub summary: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]

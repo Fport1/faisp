@@ -253,6 +253,8 @@ pub struct LlmResult {
     pub demo: bool,
     pub usage: TokenUsage,
     pub tool_log: Vec<ToolCallLog>,
+    /// Se cortó antes de acabar (con texto ya escrito): el motivo, para avisar al usuario
+    pub incomplete: Option<String>,
 }
 
 /// URL base del proveedor, sustituyendo {account_id} si la lleva.
@@ -801,6 +803,7 @@ async fn claude_code(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink
     let mut streamed = String::new();
     let mut final_text = String::new();
     let mut error: Option<String> = None;
+    let mut subtype = String::new();
     while let Some(line) = lines.next_line().await? {
         let Ok(ev) = serde_json::from_str::<Value>(&line) else { continue };
         match ev["type"].as_str().unwrap_or("") {
@@ -843,6 +846,7 @@ async fn claude_code(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink
             }
             "rate_limit_event" => set_claude_limits(&ev["rate_limit_info"]),
             "result" => {
+                subtype = ev["subtype"].as_str().unwrap_or("").to_string();
                 final_text = ev["result"].as_str().unwrap_or("").to_string();
                 let u = &ev["usage"];
                 result.usage = TokenUsage {
@@ -859,10 +863,24 @@ async fn claude_code(pid: &str, p: &Provider, model: &str, req: LlmRequest, sink
         }
     }
     let status = child.wait().await?;
-    if let Some(e) = error {
+    if let Some(e) = &error {
         if streamed.is_empty() {
             anyhow::bail!("Claude Code: {}", e.chars().take(400).collect::<String>());
         }
+    }
+    // Antes, si ya había texto, el corte se perdía y el chat «terminaba sin más»
+    if !streamed.is_empty() && (error.is_some() || subtype.starts_with("error") || !status.success()) {
+        let raw = error.clone().unwrap_or_default();
+        let reason = if subtype == "error_max_turns" {
+            "llegó al límite de pasos de una sola ejecución".to_string()
+        } else if crate::orchestrator::is_limit_error(&raw) {
+            "se agotó el límite de uso de Claude".to_string()
+        } else if !raw.trim().is_empty() {
+            raw.chars().take(220).collect()
+        } else {
+            "el proceso de Claude Code terminó de forma inesperada".to_string()
+        };
+        result.incomplete = Some(reason);
     }
     if streamed.is_empty() && !final_text.is_empty() {
         sink.text(&final_text);
@@ -1017,6 +1035,7 @@ async fn responses(http: &reqwest::Client, pid: &str, p: &Provider, model: &str,
         provider: pid.into(),
         model: v["model"].as_str().unwrap_or(model).into(),
         demo: false,
+        incomplete: None,
         usage: TokenUsage {
             input: v["usage"]["input_tokens"].as_u64().unwrap_or(0),
             output: v["usage"]["output_tokens"].as_u64().unwrap_or(0),
@@ -1040,7 +1059,7 @@ async fn demo(req: &LlmRequest, pid: &str, model: &str, reason: &str, sink: &dyn
     );
     // Demo lenta para probar la vista en vivo sin gastar tokens
     if ask.contains("[demo-lento]") {
-        for (i, (tool, input)) in [("Read", json!({"file_path": "src/main.rs"})), ("Grep", json!({"pattern": "fn main"})), ("Bash", json!({"command": "cargo check"})), ("Edit", json!({"file_path": "src/demo.rs"})), ("Write", json!({"file_path": "docs/DEMO.md"}))].into_iter().enumerate() {
+        for (i, (tool, input)) in [("Read", json!({"file_path": "tools/shot.png"})), ("Grep", json!({"pattern": "fn main"})), ("Bash", json!({"command": "cargo check"})), ("Edit", json!({"file_path": "src/demo.rs"})), ("Write", json!({"file_path": "tools/blockbench/demo.bbmodel"}))].into_iter().enumerate() {
             let todos: Vec<Value> = (0..5).map(|k: usize| json!({"content": format!("Tarea {} de la demo", k + 1), "activeForm": format!("Haciendo la tarea {} de la demo", k + 1), "status": if k < i { "completed" } else if k == i { "in_progress" } else { "pending" }})).collect();
             sink.tool("TodoWrite", &json!({"todos": todos}));
             sink.text(&format!("Paso {} de la demo: voy con `{tool}`.
@@ -1049,7 +1068,7 @@ async fn demo(req: &LlmRequest, pid: &str, model: &str, reason: &str, sink: &dyn
             tokio::time::sleep(Duration::from_millis(1500)).await;
             sink.tool(tool, &input);
             if tool == "Edit" { sink.change("src/demo.rs", 12, 3, true); }
-            if tool == "Write" { sink.change("docs/DEMO.md", 40, 0, true); }
+            if tool == "Write" { sink.change("tools/blockbench/demo.bbmodel", 40, 0, true); }
             tokio::time::sleep(Duration::from_millis(2500)).await;
         }
     }
@@ -1058,5 +1077,6 @@ async fn demo(req: &LlmRequest, pid: &str, model: &str, reason: &str, sink: &dyn
         sink.text(&chunk.iter().collect::<String>());
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    LlmResult { text, provider: pid.into(), model: model.into(), demo: true, ..Default::default() }
+    let incomplete = ask.contains("[demo-corte]").then(|| "llegó al límite de pasos de una sola ejecución (simulado)".to_string());
+    LlmResult { text, provider: pid.into(), model: model.into(), demo: true, incomplete, ..Default::default() }
 }

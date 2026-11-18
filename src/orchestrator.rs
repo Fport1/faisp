@@ -956,6 +956,7 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
         stable.push_str(&format!("\n\n## Preferencias del usuario\n{}", cfg.profile.instructions.trim()));
     }
     stable.push_str(&format!("\n\n{}\n\n## Tu equipo (comparten una pizarra de contexto)\n{}", project_header(&project), team_text(&agents)));
+    stable.push_str("\n\n## Al terminar\nCuando acabes, escribe SIEMPRE un mensaje final para el usuario, en su idioma, aunque hayas trabajado sobre todo con herramientas. Empieza con una frase con el resultado. Después, en viñetas cortas: qué cambiaste (archivos), qué comprobaste y cómo, qué NO pudiste comprobar y qué tiene que hacer el usuario. Si te quedas a medias, dilo claramente y explica qué falta. Sin relleno ni repetir todo el proceso.");
 
     let mut parts: Vec<String> = Vec::new();
     parts.push(match mode.as_str() {
@@ -1196,13 +1197,16 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
         }
         st.mark();
     }
+    if let Some(inc) = &r.incomplete {
+        let _ = tx.send(("incomplete".into(), json!({"stepId": step.id, "reason": inc})));
+    }
     let _ = tx.send(("step_done".into(), json!({"stepId": step.id, "usage": usage, "summary": summary, "model": r.model, "fallbacks": fallback_notes})));
     let step_changes = st.changes.lock().unwrap().remove(&format!("{}:{}", chat.id, step.id)).unwrap_or_default();
     let step_timeline = st.timeline.lock().unwrap().remove(&format!("{}:{}", chat.id, step.id)).unwrap_or_default();
     StepResult {
         id: step.id, agent_id: agent.id, agent_name: agent.name, icon: agent.icon, color: agent.color, model: r.model, task: step.task,
         text: r.text, files, skills: skills.into_iter().map(|s| s.id).collect(), tools: r.tool_log, usage: Some(usage), artifacts: art_ids, error: false,
-        effort: effort_used, changes: step_changes, timeline: step_timeline,
+        effort: effort_used, changes: step_changes, timeline: step_timeline, incomplete: r.incomplete.clone().unwrap_or_default(),
     }
 }
 
@@ -1279,6 +1283,7 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
     st.cancels.lock().unwrap().insert(chat_id.clone(), cancel.clone());
     st.running.lock().unwrap().insert(chat_id.clone(), (chat.title.clone(), now(), chat.project_id.clone()));
     let run_ctx = (agent_id.clone(), ctx.clone());
+    let user_text = text.clone();
 
     let planner = st.cfg.read().unwrap().routing.planner.clone();
     let agent_id = agent_id.or_else(|| {
@@ -1354,6 +1359,16 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
         };
     }
 
+    // Varios agentes: el orquestador cierra con un mensaje final para el usuario (como el resumen de Claude Code)
+    let stopped = assistant.steps.iter().any(|s| s.text.starts_with("*Detenido"));
+    if assistant.steps.len() > 1 && !stopped {
+        let _ = tx.send(("status".into(), json!({"text": "Escribiendo el resumen…"})));
+        if let Some(sum) = final_summary(&st, &user_text, &assistant.steps).await {
+            assistant.summary = sum.clone();
+            let _ = tx.send(("summary".into(), json!({"text": sum})));
+        }
+    }
+
     // Límite de Claude agotado: continuar solo cuando se reinicie (como Claude Code)
     let hit_limit = assistant.steps.iter().any(|s| s.error && is_limit_error(&s.text));
     let auto_continue = st.cfg.read().unwrap().routing.auto_continue;
@@ -1378,6 +1393,29 @@ pub async fn run_request(st: Arc<AppState>, chat_id: String, text: String, agent
     compact_chat(&st, &chat_id, false).await;
     let _ = tx.send(("done".into(), json!({"message": assistant})));
     Ok(assistant)
+}
+
+/// Mensaje final cuando trabajaron varios agentes: resultado, cambios, lo comprobado y lo que falta.
+async fn final_summary(st: &Arc<AppState>, user_text: &str, steps: &[StepResult]) -> Option<String> {
+    let cfg = st.cfg.read().unwrap().clone();
+    let rev = st.agent("revisor").or_else(|| st.agent("orquestador"))?;
+    let mut body = format!("Petición del usuario:\n{}\n\n", truncate(user_text, 3000));
+    for s in steps {
+        let ch: Vec<String> = s.changes.iter().map(|c| format!("{} (+{} -{})", c.path, c.added, c.removed)).collect();
+        body.push_str(&format!("## {}{}\n{}\n{}\n\n", s.agent_name, if s.error { " (con error)" } else if !s.incomplete.is_empty() { " (se cortó)" } else { "" }, truncate(&s.text, 4000), if ch.is_empty() { String::new() } else { format!("Archivos: {}", ch.join(", ")) }));
+    }
+    let req = LlmRequest {
+        model_ref: rev.model.clone(),
+        stable: "Eres el orquestador de un equipo de IAs. Escribe el mensaje final para el usuario, en su idioma, a partir de lo que hizo cada agente. Empieza con una o dos frases con el resultado. Después, en viñetas cortas y concretas: qué se cambió (archivos), qué se comprobó, qué NO se comprobó o falló, y qué tiene que hacer el usuario. No inventes nada que no esté en los resultados. Sin títulos grandes ni relleno; máximo unas 200 palabras.".into(),
+        messages: vec![("user".into(), body)],
+        max_tokens: 1500,
+        effort: "low".into(),
+        ..Default::default()
+    };
+    let chain = providers::model_chain(&cfg, &rev.model, &rev.fallbacks, true);
+    let (r, _) = providers::stream_chain(&st.http, &cfg, &chain, req, &NullSink, None).await.ok()?;
+    let t = r.text.trim().to_string();
+    (!t.is_empty() && !r.demo).then_some(t)
 }
 
 pub fn is_limit_error(t: &str) -> bool {

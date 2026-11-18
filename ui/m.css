@@ -142,3 +142,8 @@ svg { display: block; }
 .diff .a { background: rgba(63,185,80,.15); color: var(--add); } .diff .r { background: rgba(248,81,73,.15); color: var(--rem); } .diff .h { color: var(--blue); }
 .toast { position: fixed; left: 50%; bottom: calc(var(--sb) + 96px); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 12px; font-size: 14px; z-index: 60; max-width: 88vw; text-align: center; }
 .cc .r { width: 100%; text-align: left; }
+
+.fin { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.cut { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; padding: 10px 12px; border: 1px solid rgba(245,165,36,.5); background: rgba(245,165,36,.08); border-radius: 12px; font-size: 14px; }
+.cut span { color: var(--muted); font-size: 13px; } .cut button { align-self: flex-start; margin-top: 4px; border: 1px solid var(--line2); border-radius: 999px; padding: 5px 12px; font-size: 13.5px; }
+.ths { display: flex; gap: 6px; margin: 4px 0; } .th { width: 92px; height: 58px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line2); }

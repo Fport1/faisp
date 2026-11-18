@@ -52,7 +52,9 @@ function actSummary(items, changes = []) {
   if (n('other')) parts.push('usó ' + [...new Set(g.other.map(i => i.l))].slice(0, 2).map(esc).join(', '));
   const s = parts.join(', '); return s.charAt(0).toUpperCase() + s.slice(1);
 }
-const actHtml = (items, ch) => `<div class="act"><button>${actSummary(items, ch)} <span class="chev">${ico('chev', 14)}</span></button><div class="list">${items.map(i => `<div class="it"><b>${esc(i.l)}</b>${esc(i.a)}</div>`).join('')}</div></div>`;
+const IMGX = /\.(png|jpe?g|webp|gif)$/i;
+function thumbs(items) { const p = project(); const seen = new Set(); return items.filter(i => i.a && IMGX.test(i.a) && !seen.has(i.a) && seen.add(i.a)).slice(-3).map(i => { const a = /^[a-zA-Z]:[\\/]|^\//.test(i.a) || !p?.path ? i.a : p.path.replace(/[\\/]$/, '') + '/' + i.a; return `<img class="th" src="/api/file?path=${encodeURIComponent(a)}" alt="" loading="lazy" onerror="this.remove()">`; }).join(''); }
+const actHtml = (items, ch) => `<div class="act">${thumbs(items) ? `<div class="ths">${thumbs(items)}</div>` : ''}<button>${actSummary(items, ch)} <span class="chev">${ico('chev', 14)}</span></button><div class="list">${items.map(i => `<div class="it"><b>${esc(i.l)}</b>${esc(i.a)}</div>`).join('')}</div></div>`;
 const todoHtml = t => Array.isArray(t) && t.length ? `<div class="todo">${t.map(x => `<div class="t ${esc(x.status)}"><span class="c"></span><span>${esc(x.status === 'in_progress' ? x.activeForm || x.content : x.content)}</span></div>`).join('')}</div>` : '';
 function flow(s) {
   const tl = s.timeline?.length && !s.error ? s.timeline : [...(s.tools || []).map(t => ({ t: 'tool', name: t.name, input: t.input })), { t: 'text', text: s.text }];
@@ -66,6 +68,7 @@ function flow(s) {
   });
   close(); return out;
 }
+const cutHtml = r => `<div class="cut"><b>Se detuvo antes de terminar</b><span>${esc(r)}</span><button data-cont>Continuar</button></div>`;
 function changesCard(steps) {
   const m = new Map();
   for (const s of steps || []) for (const c of s.changes || []) { const o = m.get(c.path) || { path: c.path, added: 0, removed: 0 }; o.added += c.added || 0; o.removed += c.removed || 0; m.set(c.path, o); }
@@ -78,7 +81,7 @@ function renderMsg(m) {
   if (m.role === 'user') return `<div class="u" data-mid="${esc(m.id || '')}"><div><div class="bub">${esc(m.content)}</div>${(m.attachments || []).length ? `<div class="att">${m.attachments.map(a => `<span class="a">${esc(fileName(a))}</span>`).join('')}</div>` : ''}</div></div>`;
   const steps = m.steps || [];
   if (!steps.length) return `<div class="ai" data-mid="${esc(m.id || '')}"><div class="md">${md(m.content)}</div></div>`;
-  return `<div class="ai" data-mid="${esc(m.id || '')}">${steps.map(s => `${steps.length > 1 ? `<div class="who">${esc(s.agentName || agentById(s.agentId)?.name || s.agentId)}</div>` : ''}${flow(s)}`).join('')}${changesCard(steps)}</div>`;
+  return `<div class="ai" data-mid="${esc(m.id || '')}">${steps.map(s => `${steps.length > 1 ? `<div class="who">${esc(s.agentName || agentById(s.agentId)?.name || s.agentId)}</div>` : ''}${flow(s)}${s.incomplete ? cutHtml(s.incomplete) : ''}`).join('')}${m.summary ? `<div class="md fin">${md(m.summary)}</div>` : ''}${changesCard(steps)}</div>`;
 }
 function render() {
   const p = project();
@@ -198,6 +201,8 @@ async function stream(chatId, open, startedAt) {
     else if (ev === 'step_done') { const s = steps[d.stepId]; s?.box.querySelector('.dot')?.remove(); }
     else if (ev === 'approval') setV('Esperando tu permiso en el PC', 'approval');
     else if (ev === 'paused') live.insertAdjacentHTML('beforeend', `<div class="pause">Límite de Claude agotado · seguirá solo a las ${new Date(d.resumeAt * 1000).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</div>`);
+    else if (ev === 'incomplete') { const s = steps[d.stepId]; (s ? s.box : live).insertAdjacentHTML('beforeend', cutHtml(d.reason)); }
+    else if (ev === 'summary') { $('.status', live)?.insertAdjacentHTML('beforebegin', `<div class="md fin">${md(d.text)}</div>`); }
     else if (ev === 'error') { $('.status', live)?.remove(); live.insertAdjacentHTML('beforeend', `<div class="err">${esc(d.error)}</div>`); }
     else if (ev === 'done') $('.status', live)?.remove();
   }
@@ -291,6 +296,7 @@ document.addEventListener('click', e => {
   const cid = t.closest('[data-cid]'); if (cid) { openChat(cid.dataset.cid); return; }
   const sug = t.closest('[data-sug]'); if (sug) { $('#mIn').value = sug.dataset.sug; autosize(); $('#mIn').focus(); return; }
   const ag = t.closest('[data-ag]'); if (ag) { M.agent = ag.dataset.ag; drawAgent(); closeSheet(); return; }
+  if (t.closest('[data-cont]')) { if (!M.streaming) send('Continúa exactamente donde lo dejaste y termina con el mensaje final.'); return; }
   const act = t.closest('.act > button'); if (act) { act.parentElement.classList.toggle('open'); return; }
   const df = t.closest('[data-diff]'); if (df) { diffSheet(df.dataset.diff); return; }
   const rm = t.closest('[data-rm]'); if (rm) { M.att.splice(+rm.dataset.rm, 1); drawAtt(); return; }
@@ -307,6 +313,7 @@ let lastTop = 0;
 $('#mThread').addEventListener('scroll', () => { const th = $('#mThread'), t = th.scrollTop; const atEnd = th.scrollHeight - t - th.clientHeight < 40; if (t < lastTop - 2) M.stick = false; else if (atEnd) M.stick = true; lastTop = t; $('#mJump').classList.toggle('show', !atEnd); }, { passive: true });
 $('#mJump').onclick = () => { M.stick = true; const th = $('#mThread'); th.scrollTop = th.scrollHeight; };
 // Al volver a la app (iOS la congela en segundo plano): reengancharse si sigue trabajando
+setInterval(() => { if (document.visibilityState === 'visible') api('GET', '/api/claude/limits').then(l => { if (l) { M.limits = l; drawRing(); } }).catch(() => {}); }, 20000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && M.chatId) openChat(M.chatId); });
 
 load().then(() => openChat(store.get('chat', '') || null)).catch(e => { $('#mThread').innerHTML = `<div class="home"><h1>No hay conexión con tu PC</h1><p>${esc(e.message)}</p><p>Comprueba que faisp está abierto en el PC y que el teléfono está en la misma red WiFi.</p><button class="chip" onclick="location.reload()">Reintentar</button></div>`; });
