@@ -277,6 +277,73 @@ function msgSheet(mid) {
   };
 }
 
+// ---------- Visor de imágenes: galería con flechas, zoom (rueda, doble clic, pellizco) y arrastre ----------
+function openGallery(items, start = 0) {
+  if (!items.length) return;
+  document.querySelector('.gal')?.remove();
+  let i = Math.max(0, Math.min(start, items.length - 1)), s = 1, tx = 0, ty = 0;
+  const o = document.createElement('div'); o.className = 'gal';
+  o.innerHTML = `<div class="gal-top"><span class="gal-name"></span><span style="flex:1"></span><button class="gal-b" data-g="out" title="Alejar (−)">−</button><span class="gal-z">100 %</span><button class="gal-b" data-g="in" title="Acercar (+)">+</button><button class="gal-b" data-g="fit" title="Ajustar (0)">Ajustar</button><button class="gal-b" data-g="x" title="Cerrar (Esc)">✕</button></div>
+    <div class="gal-stage"><img class="gal-img" alt="" draggable="false"></div>
+    <button class="gal-nav prev" data-g="prev" aria-label="Anterior">‹</button><button class="gal-nav next" data-g="next" aria-label="Siguiente">›</button>
+    <div class="gal-bot"><span class="gal-count"></span></div>`;
+  document.body.appendChild(o);
+  const img = o.querySelector('.gal-img'), stage = o.querySelector('.gal-stage');
+  const apply = () => { img.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`; o.querySelector('.gal-z').textContent = Math.round(s * 100) + ' %'; stage.classList.toggle('zoomed', s > 1); };
+  const reset = () => { s = 1; tx = 0; ty = 0; apply(); };
+  const show = n => {
+    i = (n + items.length) % items.length; reset();
+    img.src = items[i].src; o.querySelector('.gal-name').textContent = items[i].name || '';
+    o.querySelector('.gal-count').textContent = `${i + 1} de ${items.length}`;
+    o.querySelectorAll('.gal-nav').forEach(b => b.style.display = items.length > 1 ? '' : 'none');
+  };
+  // Acercar manteniendo quieto el punto bajo el cursor
+  const zoomAt = (ns, cx, cy) => {
+    ns = Math.max(1, Math.min(8, ns));
+    const r = stage.getBoundingClientRect(); const px = cx - r.left - r.width / 2, py = cy - r.top - r.height / 2;
+    tx = px - (px - tx) * (ns / s); ty = py - (py - ty) * (ns / s); s = ns;
+    if (s === 1) { tx = 0; ty = 0; }
+    apply();
+  };
+  const center = () => { const r = stage.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+  const close = () => { o.remove(); document.removeEventListener('keydown', key, true); };
+  const key = e => {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowRight') show(i + 1);
+    else if (e.key === 'ArrowLeft') show(i - 1);
+    else if (e.key === '+' || e.key === '=') zoomAt(s * 1.25, ...center());
+    else if (e.key === '-') zoomAt(s / 1.25, ...center());
+    else if (e.key === '0') reset();
+    else return;
+    e.preventDefault(); e.stopPropagation();
+  };
+  document.addEventListener('keydown', key, true);
+  o.addEventListener('click', e => {
+    const g = e.target.closest('[data-g]')?.dataset.g;
+    if (g === 'x') close(); else if (g === 'next') show(i + 1); else if (g === 'prev') show(i - 1);
+    else if (g === 'in') zoomAt(s * 1.25, ...center()); else if (g === 'out') zoomAt(s / 1.25, ...center()); else if (g === 'fit') reset();
+    else if (e.target === stage && s === 1 && !moved) close();
+  });
+  stage.addEventListener('wheel', e => { e.preventDefault(); zoomAt(s * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY); }, { passive: false });
+  img.addEventListener('dblclick', e => { s > 1 ? reset() : zoomAt(2.5, e.clientX, e.clientY); });
+  // Arrastrar (con zoom) o deslizar (sin zoom) y pellizcar con dos dedos
+  const pts = new Map(); let last = null, moved = false, pinch = null, swipe0 = null;
+  stage.addEventListener('pointerdown', e => { stage.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); moved = false; last = [e.clientX, e.clientY]; swipe0 = e.clientX; if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), s }; } });
+  stage.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pts.size === 2 && pinch) { const [a, b] = [...pts.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]); zoomAt(pinch.s * d / pinch.d, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2); moved = true; return; }
+    if (s > 1 && last) { tx += e.clientX - last[0]; ty += e.clientY - last[1]; apply(); }
+    if (last && Math.hypot(e.clientX - last[0], e.clientY - last[1]) > 2) moved = true;
+    last = [e.clientX, e.clientY];
+  });
+  const up = e => {
+    if (pts.size === 1 && s === 1 && swipe0 !== null && Math.abs(e.clientX - swipe0) > 60) show(i + (e.clientX < swipe0 ? 1 : -1));
+    pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) { last = null; swipe0 = null; setTimeout(() => { moved = false; }, 0); }
+  };
+  stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', up);
+  show(i);
+}
+
 // ---------- Eventos ----------
 $('#mMenu').innerHTML = ico('menu', 22); $('#mNew').innerHTML = ico('plus', 22); $('#mAdd').innerHTML = ico('plus', 20); $('#mJump').innerHTML = ico('down', 18);
 $('#mMenu').onclick = () => drawer(true);
@@ -297,6 +364,7 @@ document.addEventListener('click', e => {
   const sug = t.closest('[data-sug]'); if (sug) { $('#mIn').value = sug.dataset.sug; autosize(); $('#mIn').focus(); return; }
   const ag = t.closest('[data-ag]'); if (ag) { M.agent = ag.dataset.ag; drawAgent(); closeSheet(); return; }
   if (t.closest('[data-cont]')) { if (!M.streaming) send('Continúa exactamente donde lo dejaste y termina con el mensaje final.'); return; }
+  const th = t.closest('.th'); if (th) { const scope = th.closest('.ai') || document; const list = [...scope.querySelectorAll('.th')].map(x => ({ src: x.src, name: decodeURIComponent(x.src.split('path=')[1] || '').split(/[\\/]/).pop() })); openGallery(list, [...scope.querySelectorAll('.th')].indexOf(th)); return; }
   const act = t.closest('.act > button'); if (act) { act.parentElement.classList.toggle('open'); return; }
   const df = t.closest('[data-diff]'); if (df) { diffSheet(df.dataset.diff); return; }
   const rm = t.closest('[data-rm]'); if (rm) { M.att.splice(+rm.dataset.rm, 1); drawAtt(); return; }

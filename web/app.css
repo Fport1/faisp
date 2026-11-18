@@ -628,3 +628,24 @@ body.panel-open #panel { min-width: 360px; }
 .act-thumbs { display: flex; gap: 6px; flex: none; }
 .athumb { width: 64px; height: 40px; object-fit: cover; border-radius: 7px; border: 1px solid var(--line2); cursor: zoom-in; background: var(--soft); }
 .athumb.mthumb { cursor: pointer; object-fit: contain; background: #2b2b30; }
+
+/* visor de imágenes */
+.gal { position: fixed; inset: 0; z-index: 90; background: rgba(10,10,12,.94); display: flex; flex-direction: column; color: #eee; user-select: none; }
+.gal-top { display: flex; align-items: center; gap: 6px; padding: 10px 14px; font-size: 13.5px; }
+.gal-name { font-family: var(--mono, monospace); opacity: .85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gal-b { border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: #eee; border-radius: 8px; padding: 4px 10px; font: inherit; cursor: pointer; min-width: 34px; }
+.gal-b:hover { background: rgba(255,255,255,.14); }
+.gal-z { min-width: 54px; text-align: center; opacity: .8; font-variant-numeric: tabular-nums; }
+.gal-stage { flex: 1; position: relative; overflow: hidden; display: grid; place-items: center; touch-action: none; cursor: zoom-in; }
+.gal-stage.zoomed { cursor: grab; } .gal-stage.zoomed:active { cursor: grabbing; }
+.gal-img { max-width: 94vw; max-height: calc(100vh - 120px); transform-origin: center; transition: transform .06s linear; border-radius: 6px; image-rendering: auto; }
+.gal-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 46px; height: 46px; border-radius: 50%; border: 1px solid rgba(255,255,255,.18); background: rgba(30,30,34,.75); color: #fff; font-size: 26px; line-height: 1; cursor: pointer; }
+.gal-nav:hover { background: rgba(60,60,66,.9); }
+.gal-nav.prev { left: 16px; } .gal-nav.next { right: 16px; }
+.gal-bot { display: flex; justify-content: center; padding: 10px 0 14px; font-size: 14px; opacity: .9; }
+
+/* agentes en paralelo: tarjetas con estado y desplazamiento propio */
+.step.live-card { border: 1px solid var(--line2); border-left-width: 2px; border-radius: 12px; background: var(--card); }
+.step.live-card .step-body { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
+.card-verb { font-size: 12.5px; color: var(--accent2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.step.closed .card-verb { color: var(--muted); }
