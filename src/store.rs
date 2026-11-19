@@ -397,6 +397,8 @@ pub struct Event {
     pub agent_name: String,
     pub task: String,
     pub summary: String,
+    /// Cómo lo hizo: comandos, archivos escritos/leídos, herramientas y modelo (para que el orquestador lo sepa siempre)
+    pub how: String,
     pub compressed: bool,
 }
 

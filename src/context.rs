@@ -1,6 +1,6 @@
 //! Contexto de proyecto: árbol de archivos, lectura segura, resúmenes baratos, artefactos
 //! y las herramientas que los agentes usan sobre tu carpeta (list_dir, read_file, search, write_file).
-use crate::store::{Event, Project};
+use crate::store::{Event, Project, StepResult};
 use regex::Regex;
 use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
@@ -135,11 +135,181 @@ pub fn heuristic_summary(text: &str, max: usize) -> String {
 
 pub fn blackboard_text(events: &[&Event], n: usize) -> String {
     let start = events.len().saturating_sub(n);
-    events[start..]
+    events[start..].iter().map(|e| event_line(e, 140)).collect::<Vec<_>>().join("\n")
+}
+
+fn event_line(e: &Event, task_max: usize) -> String {
+    let date = e.ts.get(..10).unwrap_or("");
+    let mut s = format!("- {date} [{}] {} → {}", e.agent_name, e.task.chars().take(task_max).collect::<String>(), e.summary);
+    if !e.how.is_empty() {
+        s.push_str(&format!("\n  Cómo: {}", e.how));
+    }
+    s
+}
+
+fn words(t: &str) -> Vec<String> {
+    const STOP: &[&str] = &["como", "cómo", "para", "pero", "porque", "que", "qué", "con", "los", "las", "del", "una", "uno", "unos", "por", "esto", "esta", "este", "eso", "hizo", "hiciste", "hecho", "hicieron", "fue", "the", "and", "sobre", "cual", "cuál", "todo", "algo", "desde", "tiene", "hace", "hacer", "usaste", "usó", "usado"];
+    t.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 4 && !STOP.contains(w))
+        .map(|w| w.trim_end_matches('s').to_string())
+        .collect()
+}
+
+/// Registro de trabajo para el orquestador: lo más reciente y, de todo el historial del proyecto,
+/// lo que tiene que ver con la petición (aunque sea antiguo o ya esté comprimido en la memoria).
+pub fn work_log_for(events: &[&Event], query: &str, recent: usize, relevant: usize) -> String {
+    let q = words(query);
+    let start = events.len().saturating_sub(recent);
+    let mut scored: Vec<(usize, usize)> = events[..start]
         .iter()
-        .map(|e| format!("- [{}] {} → {}", e.agent_name, e.task.chars().take(140).collect::<String>(), e.summary))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let hay = words(&format!("{} {} {}", e.task, e.summary, e.how));
+            let n = q.iter().filter(|w| hay.iter().any(|h| h.starts_with(w.as_str()) || w.starts_with(h.as_str()))).count();
+            (n > 0).then_some((n, i))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let mut picked: Vec<usize> = scored.into_iter().take(relevant).map(|x| x.1).collect();
+    picked.sort();
+    let mut out = Vec::new();
+    if !picked.is_empty() {
+        out.push("### Trabajo anterior relacionado con la petición".to_string());
+        out.extend(picked.iter().map(|&i| event_line(events[i], 200)));
+        out.push("### Lo más reciente".to_string());
+    }
+    out.extend(events[start..].iter().map(|e| event_line(e, 200)));
+    out.join("\n")
+}
+
+/// Resumen de CÓMO trabajó un agente en un paso, sin coste de tokens: archivos escritos, comandos,
+/// archivos leídos, herramientas usadas y modelo.
+pub fn work_log(s: &StepResult) -> String {
+    fn field(input: &str, keys: &[&str]) -> Option<String> {
+        if let Ok(v) = serde_json::from_str::<Value>(input) {
+            for k in keys {
+                if let Some(x) = v[*k].as_str() {
+                    return Some(x.to_string());
+                }
+            }
+        }
+        // Entrada recortada (no es JSON válido): busca la clave a mano
+        for k in keys {
+            let pat = format!("\"{k}\":\"");
+            if let Some(i) = input.find(&pat) {
+                let (mut out, mut esc) = (String::new(), false);
+                for ch in input[i + pat.len()..].chars() {
+                    match (esc, ch) {
+                        (true, 'n') => { out.push(' '); esc = false; }
+                        (true, c) => { out.push(c); esc = false; }
+                        (false, '\\') => esc = true,
+                        (false, '"') => break,
+                        (false, c) => out.push(c),
+                    }
+                }
+                return Some(out);
+            }
+        }
+        None
+    }
+    fn short(p: &str) -> String {
+        let p = p.replace('\\', "/");
+        let parts: Vec<&str> = p.split('/').filter(|x| !x.is_empty()).collect();
+        if parts.len() > 3 { parts[parts.len() - 3..].join("/") } else { p }
+    }
+    fn push(v: &mut Vec<String>, x: String) {
+        if !x.is_empty() && !v.contains(&x) {
+            v.push(x);
+        }
+    }
+    const EXPLORE: &[&str] = &["list_dir", "search", "glob", "grep", "ls"];
+    let (mut cmds, mut wrote, mut read) = (Vec::new(), Vec::new(), Vec::new());
+    let mut other: Vec<(String, usize)> = Vec::new();
+    let mut explored = 0;
+    for t in &s.tools {
+        let low = t.name.to_lowercase();
+        if low == "run_command" || low == "bash" || low == "powershell" {
+            if let Some(c) = field(&t.input, &["command", "cmd"]) {
+                // Sin el «cd <carpeta del proyecto> &&» del principio: no dice nada
+                let mut c = c.trim().to_string();
+                while c.starts_with("cd ") {
+                    match c.find("&&").map(|i| (i, 2)).into_iter().chain(c.find(';').map(|i| (i, 1))).min_by_key(|x| x.0) {
+                        Some((i, n)) => c = c[i + n..].trim().to_string(),
+                        None => break,
+                    }
+                }
+                // Los comandos de solo mirar (ls, cat, grep…) cuentan como exploración: no dicen cómo se hizo
+                const LOOK: &[&str] = &["ls", "cat", "grep", "rg", "head", "tail", "wc", "find", "echo", "pwd", "dir", "type", "tree", "stat", "file", "sed", "awk", "get-content", "get-childitem", "select-string", "test-path", "where", "which"];
+                let first = c.split_whitespace().next().unwrap_or("").to_lowercase();
+                let git_look = c.starts_with("git ") && ["status", "diff", "log", "show"].iter().any(|g| c.split_whitespace().nth(1) == Some(g));
+                if LOOK.contains(&first.as_str()) || git_look {
+                    explored += 1;
+                } else {
+                    push(&mut cmds, c.chars().take(160).collect());
+                }
+            }
+        } else if low.contains("write") && low != "todowrite" || low.contains("edit") || low == "apply_patch" || low.contains("escribir") {
+            if let Some(p) = field(&t.input, &["path", "file_path", "nota", "notebook_path"]) {
+                push(&mut wrote, short(&p));
+            }
+        } else if low == "read_file" || low == "read" || low.contains("leer") {
+            if let Some(p) = field(&t.input, &["path", "file_path", "nota", "url"]) {
+                push(&mut read, short(&p));
+            }
+        } else if EXPLORE.contains(&low.as_str()) {
+            explored += 1;
+        } else if low != "todowrite" && low != "fuente" {
+            match other.iter_mut().find(|o| o.0 == t.name) {
+                Some(o) => o.1 += 1,
+                None => other.push((t.name.clone(), 1)),
+            }
+        }
+    }
+    for c in &s.changes {
+        push(&mut wrote, short(&c.path));
+    }
+    // Primero los archivos del proyecto; los scripts de usar y tirar (Temp) al final
+    wrote.sort_by_key(|p| p.to_lowercase().starts_with("temp/") || p.to_lowercase().contains("/temp/"));
+    let list = |v: &[String], max: usize| -> String {
+        let mut x = v.iter().take(max).cloned().collect::<Vec<_>>().join(", ");
+        if v.len() > max {
+            x.push_str(&format!(" (+{})", v.len() - max));
+        }
+        x
+    };
+    let mut parts = Vec::new();
+    if !s.model.is_empty() {
+        parts.push(format!("modelo {}", s.model));
+    }
+    if !wrote.is_empty() {
+        parts.push(format!("escribió {}", list(&wrote, 10)));
+    }
+    if !cmds.is_empty() {
+        // Los últimos: suelen ser los que generan, compilan y prueban
+        let from = cmds.len().saturating_sub(6);
+        let more = if from > 0 { format!(" (y {} antes)", from) } else { String::new() };
+        parts.push(format!("ejecutó `{}`{more}", cmds[from..].join("` · `")));
+    }
+    if !read.is_empty() {
+        parts.push(format!("leyó {}", list(&read, 8)));
+    }
+    if explored > 0 {
+        parts.push(format!("exploró el proyecto ({explored} búsquedas)"));
+    }
+    if !other.is_empty() {
+        parts.push(format!("usó {}", other.iter().map(|(n, c)| if *c > 1 { format!("{n} ×{c}") } else { n.clone() }).collect::<Vec<_>>().join(", ")));
+    }
+    if s.tools.is_empty() && s.changes.is_empty() && !s.text.is_empty() {
+        parts.push("sin herramientas (respondió con texto)".into());
+    }
+    if !s.incomplete.is_empty() {
+        parts.push(format!("se cortó: {}", s.incomplete));
+    }
+    if s.error {
+        parts.push("terminó con error".into());
+    }
+    parts.join("; ")
 }
 
 pub struct FoundArtifact {
@@ -284,6 +454,22 @@ pub fn write_with_backup(project: &Project, rel: &str, content: &str, backups: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ev(task: &str, how: &str) -> Event {
+        Event { agent_name: "A".into(), task: task.into(), summary: "hecho".into(), how: how.into(), ts: "2026-11-01T00:00:00Z".into(), ..Default::default() }
+    }
+    #[test]
+    fn el_registro_trae_el_trabajo_antiguo_relacionado() {
+        let mut v = vec![ev("Modela la pistola de hielo", "escribió PistolaGen.java"), ev("Modela el gancho", "escribió GanchoGen.java")];
+        for i in 0..20 {
+            v.push(ev(&format!("Traduce el texto {i}"), ""));
+        }
+        let refs: Vec<&Event> = v.iter().collect();
+        let t = work_log_for(&refs, "¿Cómo se hicieron la pistola y el gancho?", 8, 10);
+        assert!(t.contains("PistolaGen.java") && t.contains("GanchoGen.java"), "{t}");
+        assert!(t.contains("Traduce el texto 19") && !t.contains("Traduce el texto 3\n"), "{t}");
+        let t = work_log_for(&refs, "hola", 8, 10);
+        assert!(!t.contains("PistolaGen"), "{t}");
+    }
     #[test]
     fn read_file_devuelve_imagenes_como_imagen() {
         let dir = std::env::temp_dir().join(format!("faisp-test-img-{}", std::process::id()));

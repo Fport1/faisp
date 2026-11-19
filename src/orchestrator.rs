@@ -137,6 +137,7 @@ impl AppState {
         crate::integrations::link_audio(&mut cfg);
         let mut db: Db = load_json(&data.join("db.json")).unwrap_or_default();
         seed(&mut db, &data);
+        backfill_how(&mut db);
         let ext = extensions::load(&data, &cfg.skill_dirs);
         let st = Arc::new(Self {
             cfg: RwLock::new(cfg),
@@ -195,6 +196,18 @@ impl AppState {
     }
     fn agent(&self, id: &str) -> Option<Agent> {
         self.all_agents().into_iter().find(|a| a.id == id)
+    }
+}
+
+/// Eventos antiguos (de antes de guardar el "cómo"): lo reconstruye a partir del paso guardado en el chat.
+fn backfill_how(db: &mut Db) {
+    let Db { events, chats, .. } = db;
+    for e in events.iter_mut().filter(|e| e.how.is_empty()) {
+        let Some(chat) = e.chat_id.as_ref().and_then(|id| chats.iter().find(|c| &c.id == id)) else { continue };
+        let step = chat.messages.iter().rev().flat_map(|m| m.steps.iter()).find(|s| s.agent_id == e.agent_id && s.task == e.task);
+        if let Some(s) = step {
+            e.how = work_log(s);
+        }
     }
 }
 
@@ -419,14 +432,14 @@ async fn llm_plan(st: &Arc<AppState>, project: &Option<Project>, chat: &Chat, te
         (if s.is_empty() { "(ninguna)".into() } else { s }, if c.is_empty() { "(ninguno)".into() } else { c })
     };
     let stable = format!(
-        "{}\n\n## Equipo disponible\n{}\n\n## Skills (instrucciones extra que puedes adjuntar a un paso)\n{}\n\n## Conectores (fuentes de contexto externas)\n{}\n\n## Cómo respondes\nDevuelve SOLO un objeto JSON, sin texto alrededor:\n{{\"reply\": null, \"steps\": [{{\"id\":\"s1\",\"agent\":\"<id>\",\"task\":\"<instrucción concreta y autocontenida>\",\"effort\":\"low|medium|high|xhigh\",\"dependsOn\":[],\"files\":[],\"skills\":[],\"connectors\":[]}}]}}\nReglas:\n- Usa el MÍNIMO de pasos (casi siempre 1; máximo 4). Cada agente solo hace lo suyo.\n- Cada \"task\" es la PARTE de ese agente, distinta de las demás: qué tiene que hacer y qué entregar. Nunca copies la petición entera en varios pasos ni le pidas a un agente algo que no es de su especialidad.\n- Modelos 3D → \"modelos\"; textos/lore → \"narrativa\"; diseño de contenido → \"contenido\"; código → \"codigo\"; revisión → \"revisor\".\n- CREAR voces, diálogos hablados, sonidos o música → \"audio\" (ElevenLabs). ANALIZAR vídeos, audios o imágenes existentes → \"multimedia\" (Gemini).\n- Si un paso necesita el resultado de otro, ponlo en dependsOn. Los pasos sin dependencias corren en paralelo.\n- \"files\": hasta 5 archivos del proyecto imprescindibles, elegidos del árbol (los agentes además pueden explorar con herramientas).\n- \"effort\" por paso, el mínimo que baste: low = respuestas cortas, preguntas simples, textos breves o cambios triviales; medium = tareas normales; high = código no trivial, diseño o análisis; xhigh = solo arquitectura, depuración difícil o refactors grandes.\n- Si es un saludo o una pregunta trivial que puedes contestar en 1-3 frases, ponla en \"reply\" y \"steps\": [].",
+        "{}\n\n## Equipo disponible\n{}\n\n## Skills (instrucciones extra que puedes adjuntar a un paso)\n{}\n\n## Conectores (fuentes de contexto externas)\n{}\n\n## Cómo respondes\nDevuelve SOLO un objeto JSON, sin texto alrededor:\n{{\"reply\": null, \"steps\": [{{\"id\":\"s1\",\"agent\":\"<id>\",\"task\":\"<instrucción concreta y autocontenida>\",\"effort\":\"low|medium|high|xhigh\",\"dependsOn\":[],\"files\":[],\"skills\":[],\"connectors\":[]}}]}}\nReglas:\n- Usa el MÍNIMO de pasos (casi siempre 1; máximo 4). Cada agente solo hace lo suyo.\n- Cada \"task\" es la PARTE de ese agente, distinta de las demás: qué tiene que hacer y qué entregar. Nunca copies la petición entera en varios pasos ni le pidas a un agente algo que no es de su especialidad.\n- Modelos 3D → \"modelos\"; textos/lore → \"narrativa\"; diseño de contenido → \"contenido\"; código → \"codigo\"; revisión → \"revisor\".\n- CREAR voces, diálogos hablados, sonidos o música → \"audio\" (ElevenLabs). ANALIZAR vídeos, audios o imágenes existentes → \"multimedia\" (Gemini).\n- Si un paso necesita el resultado de otro, ponlo en dependsOn. Los pasos sin dependencias corren en paralelo.\n- \"files\": hasta 5 archivos del proyecto imprescindibles, elegidos del árbol (los agentes además pueden explorar con herramientas).\n- \"effort\" por paso, el mínimo que baste: low = respuestas cortas, preguntas simples, textos breves o cambios triviales; medium = tareas normales; high = código no trivial, diseño o análisis; xhigh = solo arquitectura, depuración difícil o refactors grandes.\n- Si es un saludo o una pregunta trivial, contéstala tú en \"reply\" con \"steps\": [].\n- Preguntas sobre lo que ya hizo el equipo (qué hizo un agente, cómo, con qué herramienta o programa, qué archivos o comandos): contéstalas tú en \"reply\" con el \"Registro de trabajo\". Tú coordinas al equipo y sabes qué y cómo hizo cada uno: cita agente, fecha, archivos, comandos y herramientas tal como aparecen ahí. NUNCA digas \"no lo sé desde aquí\" ni \"probablemente\" si la respuesta está en el registro. Si de verdad no está, no supongas: crea un paso para el agente adecuado que lo compruebe en el proyecto.\n- \"reply\" admite Markdown: usa listas (1. / -), **negrita** y `código` cuando ayuden a leer; sin títulos grandes.",
         orch.system, team_text(&agents), skills_list, conn_list
     );
     let tree = project.as_ref().filter(|p| !p.path.is_empty()).map(|p| compact_tree(&project_tree(std::path::Path::new(&p.path), 600), 60)).unwrap_or_default();
     let bb = {
         let db = st.db.lock().unwrap();
         let evs: Vec<&Event> = db.events.iter().filter(|e| e.project_id == project.as_ref().map(|p| p.id.clone())).collect();
-        blackboard_text(&evs, 8)
+        work_log_for(&evs, text, 8, 10)
     };
     let mut vol = vec![project_header(project)];
     if let Some(p) = project.as_ref().filter(|p| !p.summary.is_empty()) {
@@ -436,12 +449,21 @@ async fn llm_plan(st: &Arc<AppState>, project: &Option<Project>, chat: &Chat, te
         vol.push(format!("## Árbol del proyecto (resumido)\n{tree}"));
     }
     if !bb.is_empty() {
-        vol.push(format!("## Actividad reciente\n{bb}"));
+        vol.push(format!("## Registro de trabajo (qué hizo cada agente y cómo)\n{bb}"));
     }
     let start = chat.messages.len().saturating_sub(5);
     let recent: Vec<String> = chat.messages[start..chat.messages.len().saturating_sub(1)]
         .iter()
-        .map(|m| format!("{}: {}", if m.role == "user" { "Usuario" } else { "Equipo" }, m.content.chars().take(400).collect::<String>()))
+        .map(|m| {
+            let mut s = format!("{}: {}", if m.role == "user" { "Usuario" } else { "Equipo" }, m.content.chars().take(400).collect::<String>());
+            for st in &m.steps {
+                let how = work_log(st);
+                if !how.is_empty() {
+                    s.push_str(&format!("\n  [{}] cómo: {how}", st.agent_name));
+                }
+            }
+            s
+        })
         .collect();
     let user = if recent.is_empty() { format!("Nueva petición:\n{text}") } else { format!("Conversación reciente:\n{}\n\nNueva petición:\n{text}", recent.join("\n")) };
 
@@ -1211,7 +1233,6 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     let mut art_ids = Vec::new();
     {
         let mut db = st.db.lock().unwrap();
-        db.events.push(Event { id: uid("ev_"), ts: now(), project_id: pid.clone(), chat_id: Some(chat.id.clone()), agent_id: agent.id.clone(), agent_name: agent.name.clone(), task: step.task.clone(), summary: summary.clone(), compressed: false });
         for a in extract_artifacts(&r.text) {
             let (id, ver) = upsert_artifact(&mut db, pid.clone(), Some(chat.id.clone()), a.path.clone(), &a.lang, &a.title, &a.content, &agent.id);
             let _ = tx.send(("artifact".into(), json!({"stepId": step.id, "id": id, "title": a.title, "path": a.path, "lang": a.lang, "version": ver, "applied": false})));
@@ -1225,11 +1246,18 @@ async fn run_step(st: Arc<AppState>, step: Step, project: Option<Project>, chat:
     let _ = tx.send(("step_done".into(), json!({"stepId": step.id, "usage": usage, "summary": summary, "model": r.model, "fallbacks": fallback_notes})));
     let step_changes = st.changes.lock().unwrap().remove(&format!("{}:{}", chat.id, step.id)).unwrap_or_default();
     let step_timeline = st.timeline.lock().unwrap().remove(&format!("{}:{}", chat.id, step.id)).unwrap_or_default();
-    StepResult {
+    let res = StepResult {
         id: step.id, agent_id: agent.id, agent_name: agent.name, icon: agent.icon, color: agent.color, model: r.model, task: step.task,
         text: r.text, files, skills: skills.into_iter().map(|s| s.id).collect(), tools: r.tool_log, usage: Some(usage), artifacts: art_ids, error: false,
         effort: effort_used, changes: step_changes, timeline: step_timeline, incomplete: r.incomplete.clone().unwrap_or_default(),
+    };
+    // Pizarra: qué hizo y CÓMO (comandos, archivos, herramientas), para que el orquestador lo sepa siempre
+    {
+        let mut db = st.db.lock().unwrap();
+        db.events.push(Event { id: uid("ev_"), ts: now(), project_id: pid, chat_id: Some(chat.id.clone()), agent_id: res.agent_id.clone(), agent_name: res.agent_name.clone(), task: res.task.clone(), summary, how: work_log(&res), compressed: false });
+        st.mark();
     }
+    res
 }
 
 // ---------------- Compresión de la pizarra ----------------

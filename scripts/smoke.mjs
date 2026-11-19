@@ -115,11 +115,51 @@ async function reparto() {
   fs.rmSync(d, { recursive: true, force: true });
 }
 
+// El orquestador sabe qué hizo cada agente y CÓMO: cada evento de la pizarra guarda comandos, archivos y herramientas,
+// y el historial antiguo (sin ese dato) se reconstruye al arrancar a partir de los pasos guardados en los chats.
+async function registro() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'faisp-smoke-'));
+  let f = await instance(4399, d); f.stop(); await sleep(400);
+  demoConfig(path.join(d, 'config.json'));
+  f = await instance(4399, d);
+  const p = await f.api('POST', '/api/projects', { name: 'mod', path: '' });
+  const c = await f.api('POST', '/api/chats', { projectId: p.id });
+  await f.sse(`/api/chats/${c.id}/send`, { text: 'Escribe el lore de una pistola de hielo', agentId: 'auto', attachments: [], mode: '', effort: '' });
+  let bb = await f.api('GET', `/api/projects/${p.id}/blackboard`);
+  check(bb.events.length > 0 && bb.events.every((e) => typeof e.how === 'string' && e.how.length > 0), `los eventos nuevos guardan el «cómo»: ${bb.events[0]?.how}`);
+  f.stop(); await sleep(500);
+
+  // Historial antiguo: un paso del modelador con herramientas, y su evento sin «cómo»
+  const dbPath = path.join(d, 'db.json');
+  const db = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+  const task = 'Modela la pistola de hielo para el mod';
+  db.chats.push({ id: 'c_old', projectId: p.id, title: 'pistola', createdAt: '2026-11-01T10:00:00Z', updatedAt: '2026-11-01T10:00:00Z', messages: [
+    { id: 'm1', role: 'user', content: 'haz la pistola', ts: '2026-11-01T10:00:00Z' },
+    { id: 'm2', role: 'assistant', content: 'Hecha.', ts: '2026-11-01T10:05:00Z', steps: [{ id: 's1', agentId: 'modelos', agentName: 'Modelador 3D', task, model: 'claude-code:opus', text: 'Hecha.', tools: [
+      { name: 'Write', input: JSON.stringify({ file_path: 'C:\\mods\\WT\\tools\\PistolaGen.java', content: 'class PistolaGen {}' }), result: '' },
+      { name: 'Bash', input: JSON.stringify({ command: 'java tools/PistolaGen.java' }), result: '' },
+      { name: 'Read', input: '{"file_path":"C:\\\\mods\\\\WT\\\\src\\\\main\\\\resources\\\\assets\\\\wt\\\\models\\\\item\\\\pistola_hielo.json","limit":4000, "x": "recortado sin cerrar', result: '' },
+    ], changes: [{ path: 'src/main/resources/assets/wt/models/item/pistola_hielo.bbmodel', added: 300, removed: 0, applied: true }] }] },
+  ] });
+  db.events.unshift({ id: 'ev_old', ts: '2026-11-01T10:05:00Z', projectId: p.id, chatId: 'c_old', agentId: 'modelos', agentName: 'Modelador 3D', task, summary: 'Hecha.', how: '', compressed: true });
+  fs.writeFileSync(dbPath, JSON.stringify(db));
+  f = await instance(4399, d);
+  bb = await f.api('GET', `/api/projects/${p.id}/blackboard`);
+  const old = bb.events.find((e) => e.id === 'ev_old');
+  console.log('[smoke] cómo reconstruido: ' + old?.how);
+  check(/escribió .*PistolaGen\.java/.test(old?.how || '') && /pistola_hielo\.bbmodel/.test(old?.how || ''), 'el historial antiguo recupera los archivos escritos');
+  check(/ejecutó `java tools\/PistolaGen\.java`/.test(old?.how || ''), 'y los comandos que ejecutó');
+  check(/leyó .*pistola_hielo\.json/.test(old?.how || ''), 'y lo que leyó (aunque la entrada esté recortada)');
+  f.stop(); await sleep(300);
+  fs.rmSync(d, { recursive: true, force: true });
+}
+
 if (!fs.existsSync(exe)) { bad('no existe ' + exe + ' (compila con cargo build)'); process.exit(1); }
 try {
   if (scenario === 'agentes' || scenario === 'todo') await agentes();
   if (scenario === 'chat' || scenario === 'todo') await chat();
   if (scenario === 'reparto' || scenario === 'todo') await reparto();
+  if (scenario === 'registro' || scenario === 'todo') await registro();
 } catch (e) { bad('excepción: ' + e.message); }
 console.log(`[smoke] ${fails ? fails + ' fallo(s)' : 'todo bien'}`);
 process.exit(fails ? 1 : 0);

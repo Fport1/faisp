@@ -138,7 +138,10 @@ petición → Orquestador (Haiku: planifica en JSON, barato)
 ### Ahorro de tokens
 
 - **Caché:** la parte estable del prompt se cachea, y en Claude la relectura cuesta ~10 % del precio normal.
-- **Pizarra:** cada agente ve resúmenes de lo que hicieron los demás, no sus salidas completas.
+- **Pizarra:** cada agente ve resúmenes de lo que hicieron los demás, no sus salidas completas. Cada entrada guarda
+  también **cómo** se hizo (modelo, archivos escritos y leídos, comandos y herramientas), sin gastar tokens. El
+  orquestador busca en todo el historial del proyecto lo relacionado con cada petición, así que puede contestar
+  «¿cómo se hizo X?» sin preguntar a nadie.
 - **Lectura bajo demanda:** los agentes leen los archivos que necesitan con herramientas, no reciben el proyecto entero.
 - **Skills:** solo se inyectan cuando la tarea encaja con ellas.
 - **Compresión:** cuando la pizarra crece, se condensa en una memoria del proyecto.
