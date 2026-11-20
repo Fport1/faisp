@@ -5,3 +5,6 @@ web/.vercel
 web/descargar/
 dist-ci/
 dist/
+
+# Plan de negocio: privado, solo en este PC
+BUSINESS.md
