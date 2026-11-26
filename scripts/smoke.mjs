@@ -50,7 +50,11 @@ async function agentes() {
   check(fs.existsSync(skill) && fs.readFileSync(skill, 'utf8').includes('incluida con faisp: v'), 'skill probar-mods-minecraft instalada');
   const ext = await f.api('GET', '/api/extensions');
   check(ext.skills.some((s) => s.id === 'probar-mods-minecraft' || s.name === 'probar-mods-minecraft'), 'la skill aparece cargada');
+  { const t = fs.readFileSync(skill, 'utf8'); check(t.includes('<modid>') && !new RegExp('java.com.[a-z]+.client').test(t), 'la skill de fábrica es genérica (sin proyectos de nadie)'); }
   f.stop(); await sleep(500);
+  // Una copia propia sin la marca (personalizada por el usuario) no se pisa al arrancar
+  const mine = '---\nname: probar-mods-minecraft\ndescription: mi versión\n---\nMis mods.\n';
+  fs.writeFileSync(skill, mine);
 
   // 2) Migración de una configuración antigua (v4, sin los cambios)
   const cfgPath = path.join(d1, 'config.json');
@@ -68,6 +72,7 @@ async function agentes() {
   check(c2.keywords.includes('en el juego') && c2.mcp.includes('gemini-media') && /PROBAR UN MOD/.test(c2.system) && /PRUEBA/.test(c2.description), 'migración v5: Código actualizado');
   const l2 = st2.agents.find((a) => a.id === 'launcher');
   if (l2) check(!l2.keywords.includes('lanzar') && /EXCEPCIÓN/.test(l2.system) && /NO prueba/.test(l2.description), 'migración v5: Launcher actualizado');
+  check(fs.readFileSync(skill, 'utf8') === mine, 'una skill personalizada (sin la marca) no se pisa');
 
   // 3) Reparto: «pruébalo en el juego» va a Código, no al Launcher
   const p = await f.api('POST', '/api/projects', { name: 'mod', path: '' });
