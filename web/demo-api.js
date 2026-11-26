@@ -79,7 +79,7 @@
           emit('step_start', { stepId: s.id, agent: a.id, agentName: a.name, icon: a.icon, color: a.color, model: a.model, task: s.task, chain: [a.model, ...(a.fallbacks || [])], context: { files: [], skills: [], tools: a.tools, estTokens: 600 + Math.round(Math.random() * 900) } });
           if (a.tools && a.id !== 'narrativa') { emit('tool', { stepId: s.id, name: 'list_dir', input: { path: 'src/main/resources/assets' } }); await sleep(250); }
           if (a.webSearch) { emit('tool', { stepId: s.id, name: 'web_search', input: { query: body.text.slice(0, 60) } }); await sleep(400); }
-          const text = '*Demo web: respuesta de ejemplo, sin llamar a ningún modelo.*\n\n' + (CANNED[a.id] || CANNED.codigo);
+          const text = '> **Demo web: esto es una respuesta de ejemplo fija.** No se llama a ningún modelo, así que no tiene que ver con lo que escribiste: siempre sale el mismo ejemplo del proyecto «Mod navideño». Tus chats se guardan solo en este navegador; no hay datos de nadie más. Con la app de escritorio y tus claves, el equipo trabaja de verdad sobre tu petición.\n\n' + (CANNED[a.id] || CANNED.codigo);
           for (const piece of text.match(/[\s\S]{1,18}/g)) { emit('delta', { stepId: s.id, text: piece }); await sleep(14); }
           const arts = [];
           for (const m of text.matchAll(/```(\w+) path=(\S+)\n([\s\S]*?)```/g)) {
