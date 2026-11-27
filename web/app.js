@@ -2182,6 +2182,42 @@ function setGeneral(body, cfg, save) {
   $('#sv', body).onclick = async () => { cfg.profile = { name: $('#pn').value.trim(), language: $('#pl').value, instructions: $('#pi').value, spellcheck: $('#psc').checked, spellLang: $('#psl').value }; await save(); renderSidebar(); };
 }
 
+// Estado de la sesión de Claude Code o de Codex CLI con su botón (en las tarjetas de Modelos)
+async function drawSession(el) {
+  const kind = el.dataset.sess;
+  const claude = kind === 'claude';
+  let found = false, logged = false, who = '';
+  try {
+    if (claude) {
+      const a = await api('GET', '/api/account');
+      found = a.found; logged = a.found && a.status?.loggedIn && !a.expired; who = a.status?.email || (a.expired ? 'caducada' : '');
+    } else {
+      const c = await api('GET', '/api/cli/codex/status');
+      found = c.found; logged = c.found && c.loggedIn;
+    }
+  } catch {}
+  if (!el.isConnected) return;
+  const name = claude ? 'Claude' : 'ChatGPT';
+  el.innerHTML = !found ? `<span class="muted">${claude ? 'Claude Code no encontrado' : 'Codex CLI no instalado'} · <a href="#" data-goacc>Ajustes → Cuenta</a></span>`
+    : `<span class="sess-st"><span class="dot ${logged ? 'on' : ''}"></span>${logged ? 'Sesión iniciada' : 'Sin sesión'}${who ? ` <span class="muted">· ${esc(who)}</span>` : ''}</span>`
+      + (logged ? `<button type="button" class="btn sm" data-sout>Cerrar sesión</button>` : `<button type="button" class="btn sm accent" data-sin>Iniciar sesión</button>`);
+  el.querySelector('[data-goacc]')?.addEventListener('click', e => { e.preventDefault(); S.view = 'settings'; S.settingsTab = 'account'; render(); });
+  el.querySelector('[data-sout]')?.addEventListener('click', async () => {
+    if (!await ask(`¿Cerrar la sesión de ${name} en este equipo?`, { ok: 'Cerrar sesión' })) return;
+    await api('POST', claude ? '/api/account/logout' : '/api/cli/codex/logout').catch(e => toast(e.message));
+    toast('Sesión cerrada'); drawSession(el);
+  });
+  el.querySelector('[data-sin]')?.addEventListener('click', async () => {
+    await api('POST', claude ? '/api/account/login' : '/api/cli/codex/login').catch(e => toast(e.message));
+    toast('Sigue los pasos en la ventana que se abrió; esto se actualiza solo');
+    let n = 0; const t = setInterval(async () => {
+      if (++n > 60 || !el.isConnected) return clearInterval(t);
+      const ok = claude ? await api('GET', '/api/account').then(a => a.status?.loggedIn && !a.expired).catch(() => false) : await api('GET', '/api/cli/codex/status').then(c => c.loggedIn).catch(() => false);
+      if (ok) { clearInterval(t); toast('Sesión iniciada'); drawSession(el); }
+    }, 3000);
+  });
+}
+
 async function setAccount(body, cfg, save) {
   body.innerHTML = '<div class="muted">Comprobando tu cuenta de Claude…</div>';
   const acc = await api('GET', '/api/account');
@@ -2195,7 +2231,7 @@ async function setAccount(body, cfg, save) {
         <div style="flex:1;min-width:0">${!acc.found ? '<b>Claude Code no encontrado</b><div class="muted" style="font-size:13px">Instala Claude Code o la app de escritorio de Claude.</div>'
           : `<b>${logged ? 'Sesión iniciada' : acc.expired ? 'Sesión caducada' : 'Sin sesión'}</b>${st.email ? ` <span class="muted">· ${esc(st.email)}</span>` : ''}
              <div class="muted" style="font-size:13px">${esc(plan)}${st.loginExpiresAt ? ' · caduca ' + new Date(st.loginExpiresAt).toLocaleDateString('es-ES') : ''}</div>`}</div>
-        ${acc.found ? (logged ? '<button class="btn sm" id="lo">Cerrar sesión</button>' : '<button class="btn accent" id="li">Iniciar sesión con Claude</button>') : ''}
+        ${acc.found ? `${logged ? '' : `<button class="btn accent" id="li">${acc.expired ? 'Volver a iniciar sesión' : 'Iniciar sesión con Claude'}</button>`}${logged || acc.expired || st.email ? '<button class="btn sm" id="lo">Cerrar sesión</button>' : ''}` : ''}
       </div>${acc.found ? `<div class="mono muted" style="font-size:11.5px;margin-top:8px;overflow:hidden;text-overflow:ellipsis">${esc(acc.path)}</div>` : ''}</div>
       <label class="check" style="margin-top:14px"><input type="checkbox" id="us" ${cfg.routing.useSubscription ? 'checked' : ''}> Usar primero mi suscripción para los modelos de Claude (si falla o se agota, sigue con la API y los respaldos)</label>
       <p class="muted" style="font-size:12.5px;margin-top:10px">Esta opción es para tu uso personal. Para distribuir faisp con inicio de sesión de claude.ai a otras personas, hace falta la aprobación de Anthropic.</p></section>
@@ -2206,7 +2242,8 @@ async function setAccount(body, cfg, save) {
       <button class="btn primary" id="sv" style="margin-top:12px">Guardar</button></section>`;
   api('GET', '/api/cli/codex/status').then(cx => {
     const box = $('#codexBox', body); if (!box) return;
-    box.innerHTML = `<div class="row"><div class="avatar big">${ico('bot', 18)}</div><div style="flex:1;min-width:0"><b>${!cx.found ? 'Codex CLI no instalado' : cx.loggedIn ? 'Sesión iniciada' : 'Sin sesión'}</b><div class="muted" style="font-size:13px">${esc(cx.status || 'Necesita Node.js (ya lo tienes)')}</div></div>${!cx.found ? '<button class="btn" id="cxi">Instalar Codex CLI</button>' : cx.loggedIn ? '' : '<button class="btn accent" id="cxl">Iniciar sesión con ChatGPT</button>'}</div>`;
+    box.innerHTML = `<div class="row"><div class="avatar big">${ico('bot', 18)}</div><div style="flex:1;min-width:0"><b>${!cx.found ? 'Codex CLI no instalado' : cx.loggedIn ? 'Sesión iniciada' : 'Sin sesión'}</b><div class="muted" style="font-size:13px">${esc(cx.status || 'Necesita Node.js (ya lo tienes)')}</div></div>${!cx.found ? '<button class="btn" id="cxi">Instalar Codex CLI</button>' : cx.loggedIn ? '<button class="btn sm" id="cxo">Cerrar sesión</button>' : '<button class="btn accent" id="cxl">Iniciar sesión con ChatGPT</button>'}</div>`;
+    $('#cxo', box)?.addEventListener('click', async () => { if (!await ask('¿Cerrar la sesión de ChatGPT (Codex CLI) en este equipo?', { ok: 'Cerrar sesión' })) return; await api('POST', '/api/cli/codex/logout').catch(e => toast(e.message)); setAccount(body, cfg, save); });
     $('#cxi', box)?.addEventListener('click', async () => { if (!await ask('Se abrirá una consola que ejecuta: npm install -g @openai/codex (paquete oficial de OpenAI). ¿Continuar?')) return; await api('POST', '/api/cli/codex/install'); toast('Instalando en la consola; vuelve aquí al terminar'); });
     $('#cxl', box)?.addEventListener('click', async () => { await api('POST', '/api/cli/codex/login'); toast('Sigue los pasos en el navegador'); });
   }).catch(() => {});
@@ -2357,12 +2394,13 @@ function setModels(body, cfg, save) {
     await save('Aplicado a todos los agentes');
   };
   const drawProvs = () => {
-    $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px">${brandTile(id, p.label, 30)}<span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b>${KEY_URLS[id] && !p.apiKey ? `<a class="keylink" href="${KEY_URLS[id]}" target="_blank" rel="noopener">${ico('key', 12)} Obtener clave</a>` : usageLinks(id)}<span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span>${p.type !== 'elevenlabs' ? `<button class="btn sm" data-ptest="${esc(id)}">${ico('play', 12)} Probar</button>` : ''}<button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button><button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button></div>
+    $('#provs').innerHTML = Object.entries(cfg.providers).sort((a, b) => (ready[b[0]] - ready[a[0]]) || (b[1].free - a[1].free)).map(([id, p]) => `<div class="card" style="padding:12px 14px"><div class="row" style="margin-bottom:6px">${brandTile(id, p.label, 30)}<span class="dot ${ready[id] ? 'on' : ''}"></span><b>${esc(p.label || id)}</b>${KEY_URLS[id] && !p.apiKey ? `<a class="keylink" href="${KEY_URLS[id]}" target="_blank" rel="noopener">${ico('key', 12)} Obtener clave</a>` : usageLinks(id)}<span class="mono muted">${esc(id)}</span>${p.free ? `<span class="chip eco">${ico('zap', 12)} ${p.type === 'claude-code' ? 'tu plan' : 'gratis'}</span>` : ''}${p.responsesApi ? `<span class="chip">${ico('globe', 12)} búsqueda web</span>` : ''}<span style="flex:1"></span>${p.type !== 'elevenlabs' ? `<button class="btn sm" data-ptest="${esc(id)}">${ico('play', 12)} Probar</button>` : ''}<button class="btn sm" data-models="${esc(id)}">${ico('search', 13)} Ver modelos</button>${(S.st.builtinProviders || []).includes(id) ? '' : `<button class="btn sm danger" data-rmp="${esc(id)}">Quitar</button>`}</div>
       ${p.note ? `<div class="muted" style="font-size:12.5px;margin-bottom:8px">${esc(p.note)}</div>` : ''}<div class="models-out" data-mo="${esc(id)}"></div>
-      <div class="form three"><label>Tipo<select class="in" data-pf="${esc(id)}.type">${[['anthropic', 'anthropic'], ['openai', 'openai (compatible)'], ['claude-code', 'Claude Code (suscripción)'], ['mock', 'demo']].map(([k, l]) => `<option value="${k}" ${p.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <div class="form three"><label>Tipo<select class="in" data-pf="${esc(id)}.type">${[['anthropic', 'anthropic'], ['openai', 'openai (compatible)'], ['claude-code', 'Claude Code (suscripción)'], ['codex-cli', 'Codex CLI (suscripción)'], ['elevenlabs', 'ElevenLabs'], ['mock', 'demo']].map(([k, l]) => `<option value="${k}" ${p.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       ${(p.baseUrl || '').includes('{account_id}') ? `<label>ID de cuenta<input type="text" data-pf="${esc(id)}.accountId" value="${esc(p.accountId || '')}" placeholder="Workers AI → Usar REST API → Account ID"></label>` : `<label>${p.type === 'claude-code' ? 'Ruta de claude.exe (vacío = automática)' : 'URL base'}<input type="text" data-pf="${esc(id)}.baseUrl" value="${esc(p.baseUrl)}"></label>`}
-      ${p.type === 'claude-code' ? '<label>Sesión<input type="text" disabled value="En Ajustes → Cuenta"></label>' : `<label>API key ${p.noKeyNeeded ? '(no necesaria)' : ''}<div class="keybox"><input type="password" data-pf="${esc(id)}.apiKey" value="${esc(p.apiKey)}" placeholder="${p.noKeyNeeded ? 'local' : 'pega tu clave'}" autocomplete="off"><button type="button" class="icon-btn" data-eye="${esc(id)}" title="Ver u ocultar la clave">${ico('eye', 15)}</button></div></label>`}</div></div>`).join('');
+      ${p.type === 'claude-code' || p.type === 'codex-cli' ? `<label style="grid-column:1/-1">Sesión<div class="sess" data-sess="${p.type === 'claude-code' ? 'claude' : 'codex'}"><span class="muted">Comprobando…</span></div></label>` : `<label>API key ${p.noKeyNeeded ? '(no necesaria)' : ''}<div class="keybox"><input type="password" data-pf="${esc(id)}.apiKey" value="${esc(p.apiKey)}" placeholder="${p.noKeyNeeded ? 'local' : 'pega tu clave'}" autocomplete="off"><button type="button" class="icon-btn" data-eye="${esc(id)}" title="Ver u ocultar la clave">${ico('eye', 15)}</button></div></label>`}</div></div>`).join('');
     $$('[data-rmp]').forEach(b => b.onclick = async () => { if (await ask('¿Quitar proveedor?', { ok: 'Quitar', danger: true })) { delete cfg.providers[b.dataset.rmp]; drawProvs(); } });
+    $$('[data-sess]').forEach(el => drawSession(el));
     $$('[data-pf]').forEach(inp => inp.onchange = () => { const [id, f] = inp.dataset.pf.split('.'); cfg.providers[id][f] = inp.value; });
     $$('[data-ptest]').forEach(b => b.onclick = () => testProvider(b.dataset.ptest));
     $$('[data-eye]').forEach(b => b.onclick = async () => {
