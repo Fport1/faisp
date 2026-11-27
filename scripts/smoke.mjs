@@ -159,12 +159,48 @@ async function registro() {
   fs.rmSync(d, { recursive: true, force: true });
 }
 
+// Los proveedores principales no se pueden quitar (ni por la API ni con una configuración vieja) y hay cierre de sesión
+async function proveedores() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'faisp-smoke-'));
+  let f = await instance(4399, d); f.stop(); await sleep(400);
+  demoConfig(path.join(d, 'config.json'));
+  f = await instance(4399, d);
+  const st = await f.api('GET', '/api/state');
+  const builtin = st.builtinProviders || [];
+  check(['claude', 'chatgpt', 'anthropic', 'gemini'].every((id) => builtin.includes(id)), `el estado dice cuáles son principales: ${builtin.join(', ')}`);
+  const cfg = st.config;
+  delete cfg.providers.claude; delete cfg.providers.gemini;
+  cfg.providers.mio = { label: 'mio', type: 'openai', baseUrl: 'https://ejemplo.invalid/v1', apiKey: '', noKeyNeeded: false, headers: {}, free: false, responsesApi: false, note: '' };
+  await f.api('PUT', '/api/config', cfg);
+  let st2 = await f.api('GET', '/api/state');
+  check(st2.config.providers.claude && st2.config.providers.gemini, 'si se quitan por la API, los principales vuelven');
+  check(!!st2.config.providers.mio, 'los proveedores propios se conservan');
+  delete st2.config.providers.mio;
+  await f.api('PUT', '/api/config', st2.config);
+  st2 = await f.api('GET', '/api/state');
+  check(!st2.config.providers.mio, 'un proveedor propio sí se puede quitar');
+  f.stop(); await sleep(500);
+  // Configuración vieja a la que le falta uno: vuelve al arrancar
+  const cp = path.join(d, 'config.json'); const c = JSON.parse(fs.readFileSync(cp, 'utf8'));
+  delete c.providers.groq; fs.writeFileSync(cp, JSON.stringify(c));
+  f = await instance(4399, d);
+  check(!!(await f.api('GET', '/api/state')).config.providers.groq, 'al arrancar, un principal que faltaba vuelve');
+  // Solo GET: un POST cerraría de verdad la sesión de Claude Code / Codex de este PC. 405 = la ruta existe.
+  for (const r of ['/api/account/logout', '/api/cli/codex/logout']) {
+    const res = await fetch('http://127.0.0.1:4399' + r);
+    check(res.status === 405, `existe ${r} (GET responde ${res.status})`);
+  }
+  f.stop(); await sleep(300);
+  fs.rmSync(d, { recursive: true, force: true });
+}
+
 if (!fs.existsSync(exe)) { bad('no existe ' + exe + ' (compila con cargo build)'); process.exit(1); }
 try {
   if (scenario === 'agentes' || scenario === 'todo') await agentes();
   if (scenario === 'chat' || scenario === 'todo') await chat();
   if (scenario === 'reparto' || scenario === 'todo') await reparto();
   if (scenario === 'registro' || scenario === 'todo') await registro();
+  if (scenario === 'proveedores' || scenario === 'todo') await proveedores();
 } catch (e) { bad('excepción: ' + e.message); }
 console.log(`[smoke] ${fails ? fails + ' fallo(s)' : 'todo bien'}`);
 process.exit(fails ? 1 : 0);

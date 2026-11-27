@@ -169,6 +169,7 @@ async fn state(State(st): St) -> Json<Value> {
     Json(json!({
         "config": pub_cfg,
         "providerReady": ready,
+        "builtinProviders": crate::defaults::default_providers().keys().collect::<Vec<_>>(),
         "agents": agents,
         "projects": db.projects,
         "chats": chats,
@@ -190,6 +191,12 @@ async fn put_config(State(st): St, Json(mut new): Json<Config>) -> ApiResult {
     }
     if new.agents.is_empty() {
         new.agents = cfg.agents.clone();
+    }
+    // Los proveedores principales no se pueden quitar: si faltan, vuelven (con lo que tenían)
+    for (id, p) in crate::defaults::default_providers() {
+        if !new.providers.contains_key(&id) {
+            new.providers.insert(id.clone(), cfg.providers.get(&id).cloned().unwrap_or(p));
+        }
     }
     *cfg = new;
     st.mark_cfg();
@@ -975,9 +982,9 @@ async fn account_login(State(st): St) -> ApiResult {
 async fn account_logout(State(st): St) -> ApiResult {
     let exe = claude_exe(&st).ok_or_else(|| bad("No encuentro Claude Code"))?;
     let mut cmd = tokio::process::Command::new(&exe);
-    cmd.args(["auth", "logout"]);
+    cmd.args(["auth", "logout"]).kill_on_drop(true);
     hidden(&mut cmd);
-    let _ = cmd.output().await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
     Ok(Json(json!({"ok": true})))
 }
 
@@ -1116,6 +1123,7 @@ pub fn router_v3(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/providers/{id}/key", get(provider_key))
         .route("/api/claude/limits/refresh", post(claude_limits_refresh))
         .route("/api/cli/codex/login", post(codex_login))
+        .route("/api/cli/codex/logout", post(codex_logout))
         .route("/api/cli/codex/install", post(codex_install))
 }
 
@@ -1281,6 +1289,15 @@ async fn codex_login(State(st): St) -> ApiResult {
     std::process::Command::new("cmd").args(["/C", "start", "Iniciar sesión en ChatGPT", &exe.to_string_lossy(), "login"]).spawn().map_err(bad)?;
     #[cfg(not(windows))]
     std::process::Command::new(&exe).arg("login").spawn().map_err(bad)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn codex_logout(State(st): St) -> ApiResult {
+    let exe = codex_exe(&st).ok_or_else(|| bad("Codex CLI no está instalado"))?;
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.arg("logout").kill_on_drop(true);
+    hidden(&mut cmd);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
     Ok(Json(json!({"ok": true})))
 }
 

@@ -655,3 +655,6 @@ body.panel-open #panel { min-width: 360px; }
 .step.live-card .step-body { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
 .card-verb { font-size: 12.5px; color: var(--accent2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .step.closed .card-verb { color: var(--muted); }
+/* Sesión de Claude Code / Codex en las tarjetas de Modelos */
+.sess { display: flex; align-items: center; gap: 10px; min-height: 36px; flex-wrap: wrap; font-size: 13.5px; }
+.sess-st { display: inline-flex; align-items: center; gap: 7px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

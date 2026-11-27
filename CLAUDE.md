@@ -63,7 +63,7 @@ curl -s -N -X POST http://127.0.0.1:4399/api/chats/<id>/send -H "Content-Type: a
 **`scripts/smoke.mjs`** junta esto: arranca instancias aisladas (puerto 4399, datos temporales, todo en modo demo),
 ejecuta los pasos, imprime cada resultado con un prefijo fijo (`[smoke] ok ...` / `[smoke] FALLO ...`), cierra el
 proceso y sale con código 1 si algo falla. Uso: `cargo build` y luego `node scripts/smoke.mjs todo` (o un escenario:
-`agentes`, `chat`, `reparto`, `registro`) y `grep "\[smoke\]"`. Cuando se pida algo nuevo, añádele un paso o un escenario con nombre.
+`agentes`, `chat`, `reparto`, `registro`, `proveedores`) y `grep "\[smoke\]"`. Cuando se pida algo nuevo, añádele un paso o un escenario con nombre.
 (El puerto 4398 suele estar ocupado por otro programa de este PC: no lo uses.)
 
 ## Probar la interfaz

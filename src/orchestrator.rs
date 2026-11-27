@@ -126,8 +126,9 @@ impl AppState {
     pub fn load(data: PathBuf) -> Arc<Self> {
         let _ = std::fs::create_dir_all(&data);
         let mut cfg: Config = load_json(&data.join("config.json")).unwrap_or_else(defaults::default_config);
-        if cfg.providers.is_empty() {
-            cfg.providers = defaults::default_config().providers;
+        // Los proveedores principales siempre están (si alguno se quitó en una versión anterior, vuelve)
+        for (id, p) in defaults::default_providers() {
+            cfg.providers.entry(id).or_insert(p);
         }
         if cfg.agents.is_empty() {
             cfg.agents = defaults::default_agents();
